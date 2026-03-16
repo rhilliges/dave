@@ -85,10 +85,10 @@ func createTemplate(path, content string) error {
 // - - layout resolver (HX-Request header example)
 // - SKIP_RESOLVER header (make configurable)
 // - SKIP_GLOBAL_VALUES header (make configurable)
-// - i18n
 // - globals
 // - - global available values
 // - - global available functions (resolvers?)
+// - - i18n
 // - error handling
 // - - logging (return error if some rendering failed)
 // - - fallback templates (unexpected error, auth error ...)
@@ -98,10 +98,12 @@ func createTemplate(path, content string) error {
 //
 // EDGE CASES:
 // - make header case insensitive (double check if needed)
+// - what about paths where a parent has an index.tmpl?
 // - make configurable
-// - - default
+// - - default layout
 // - - default file extension
 // - - always skip resolvers
+// - how to integrate middleware (authentication, authorization)
 
 func TestRouter(t *testing.T) {
 	testCases := []templateTest{
@@ -154,9 +156,9 @@ func TestRouter_UseResolver(t *testing.T) {
 	assert.Equal(t, "resolvedValue,value2", string(body))
 }
 
-func TestRouter_ReferencingTemplate(t *testing.T) {
+func TestRouter_ReferencingAnotherTemplate(t *testing.T) {
 	templates := []templateTest{
-		{"path/to/another/template", "T1", "", ""},
+		{"path/to/another/template.tmpl", "T1", "", ""},
 		{"path/with/template/index.tmpl", `{{template "path/to/another/template"}}`, "", ""},
 	}
 	dir := createTestDir(templates)
