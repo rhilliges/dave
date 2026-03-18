@@ -16,25 +16,11 @@ import (
 )
 
 type testTemplate struct {
-	filepath string
-	contents string
-}
-
-type templateTest struct {
 	location string
 	contents string
-	// testTemplate
-	path           string
-	expectedRender string
 }
 
-type componentRef struct {
-	location string
-	name     string
-	contents string
-}
-
-func createTestDir(files []templateTest) string {
+func prepareTest(files []testTemplate) (*Router, func()) {
 	dir, err := os.MkdirTemp("", "template")
 	if err != nil {
 		log.Fatal(err)
@@ -57,24 +43,13 @@ func createTestDir(files []templateTest) string {
 			log.Fatal(err)
 		}
 	}
-	return dir
-}
-
-func createTemplate(path, content string) error {
-	f, err := os.Create(path)
-	if err != nil {
-		return err
+	fs := os.DirFS(dir)
+	return NewRouter(fs), func() {
+		os.RemoveAll(dir)
 	}
-	defer f.Close()
-	_, err = io.WriteString(f, content)
-	if err != nil {
-		return err
-	}
-	return nil
 }
 
 // TODO:
-// - refactor tests (routerTest(router, ...))
 // - file based routing - done
 // - path variables - done
 // - resolvers - done
@@ -93,10 +68,10 @@ func createTemplate(path, content string) error {
 // - - i18n
 // - error handling
 // - - logging (return error if some rendering failed)
+// - - validation error during POST/PATCH/PUT
 // - - fallback templates (unexpected error, auth error ...)
 // - CRUD
-// - - POST
-// - - UPDATE
+// - - POST - done
 // - - PATCH
 // - - PUT
 // - - DELETE
@@ -108,6 +83,7 @@ func createTemplate(path, content string) error {
 // - cache data to render template for quick browser refreshes
 //
 // EDGE CASES:
+// - user writes to ResponseWriter -> panic and tell the user why not to do that
 // - parse path variables before calling resolvers
 // - make header case insensitive (double check if needed)
 // - make configurable
@@ -117,20 +93,26 @@ func createTemplate(path, content string) error {
 // - how to integrate middleware? (authentication, authorization)
 
 func TestRouter(t *testing.T) {
-	testCases := []templateTest{
-		{"test/index.tmpl", "test", "/test", "test"},
-		{"sub/test2/index.tmpl", "test2", "/sub/test2", "test2"},
-		{"v1/{var1}/index.tmpl", "{{.path_variables.var1}}", "/v1/value1", "value1"},
-		{"v1/{var1}/v2/{var2}/index.tmpl", "{{.path_variables.var1}},{{.path_variables.var2}}", "/v1/value1/v2/value2", "value1,value2"},
+	templates := []testTemplate{
+		{"test/index.tmpl", "test"},
+		{"sub/test2/index.tmpl", "test2"},
+		{"v1/{var1}/index.tmpl", "{{.path_variables.var1}}"},
+		{"v1/{var1}/v2/{var2}/index.tmpl", "{{.path_variables.var1}},{{.path_variables.var2}}"},
 	}
-	dir := createTestDir(testCases)
-	defer os.RemoveAll(dir)
-	fs := os.DirFS(dir)
-	router := NewRouter(fs)
-	assert.NotNil(t, router, "router is nil")
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
 
+	testCases := []struct {
+		path           string
+		expectedRender string
+	}{
+		{"/test", "test"},
+		{"/sub/test2", "test2"},
+		{"/v1/value1", "value1"},
+		{"/v1/value1/v2/value2", "value1,value2"},
+	}
 	for _, test := range testCases {
-		t.Run("render "+test.location, func(t *testing.T) {
+		t.Run("render "+test.path, func(t *testing.T) {
 			req := httptest.NewRequest("GET", test.path, nil)
 			rec := httptest.NewRecorder()
 			router.ServeHTTP(rec, req)
@@ -144,14 +126,13 @@ func TestRouter(t *testing.T) {
 }
 
 func TestRouter_ReferencingAnotherTemplate(t *testing.T) {
-	templates := []templateTest{
-		{"path/to/another/template.tmpl", "T1", "", ""},
-		{"path/with/template/index.tmpl", `{{template "path/to/another/template"}}`, "", ""},
+	templates := []testTemplate{
+		{"path/to/another/template.tmpl", "T1"},
+		{"path/with/template/index.tmpl", `{{template "path/to/another/template"}}`},
 	}
-	dir := createTestDir(templates)
-	defer os.RemoveAll(dir)
-	fs := os.DirFS(dir)
-	router := NewRouter(fs)
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
 	req := httptest.NewRequest("GET", "/path/with/template", nil)
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
@@ -162,14 +143,13 @@ func TestRouter_ReferencingAnotherTemplate(t *testing.T) {
 }
 
 func TestRouter_TemplateHeader(t *testing.T) {
-	templates := []templateTest{
-		{"path/to/create.tmpl", "create", "", ""},
-		{"path/to/index.tmpl", "index", "", ""},
+	templates := []testTemplate{
+		{"path/to/create.tmpl", "create"},
+		{"path/to/index.tmpl", "index"},
 	}
-	dir := createTestDir(templates)
-	defer os.RemoveAll(dir)
-	fs := os.DirFS(dir)
-	router := NewRouter(fs)
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
 	req := httptest.NewRequest("GET", "/path/to", nil)
 	req.Header.Add("D-TEMPLATE", "create")
 	rec := httptest.NewRecorder()
@@ -181,14 +161,13 @@ func TestRouter_TemplateHeader(t *testing.T) {
 }
 
 func TestRouter_DefaultLayout(t *testing.T) {
-	templates := []templateTest{
-		{"layouts/default.tmpl", "layout-start {{if .content}} {{.content}} {{end}} layout-end", "", ""},
-		{"path/to/index.tmpl", "layout-content", "", ""},
+	templates := []testTemplate{
+		{"layouts/default.tmpl", "layout-start {{if .content}} {{.content}} {{end}} layout-end"},
+		{"path/to/index.tmpl", "layout-content"},
 	}
-	dir := createTestDir(templates)
-	defer os.RemoveAll(dir)
-	fs := os.DirFS(dir)
-	router := NewRouter(fs)
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
 	req := httptest.NewRequest("GET", "/path/to", nil)
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
@@ -199,32 +178,31 @@ func TestRouter_DefaultLayout(t *testing.T) {
 }
 
 func TestRouter_LayoutHeader(t *testing.T) {
-	templates := []templateTest{
-		{"layouts/custom.tmpl", "custom-layout-start {{if .content}} {{.content}} {{end}} custom-layout-end", "", ""},
-		{"path/to/index.tmpl", "layout-content", "", ""},
+	templates := []testTemplate{
+		{"layouts/custom.tmpl", "custom-layout-start {{if .content}} {{.content}} {{end}} custom-layout-end"},
+		{"path/to/index.tmpl", "layout-content"},
 	}
-	dir := createTestDir(templates)
-	defer os.RemoveAll(dir)
-	fs := os.DirFS(dir)
-	router := NewRouter(fs)
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
 	req := httptest.NewRequest("GET", "/path/to", nil)
 	rec := httptest.NewRecorder()
 	req.Header.Add("D-LAYOUT", "custom")
-	router.ServeHTTP(rec, req)
-	resp := rec.Result()
 
+	router.ServeHTTP(rec, req)
+
+	resp := rec.Result()
 	body, _ := io.ReadAll(resp.Body)
 	assert.Equal(t, "custom-layout-start  layout-content  custom-layout-end", string(body))
 }
 
 func TestRouter_GetResolver(t *testing.T) {
-	testCases := []templateTest{
-		{"v1/{var1}/v2/{var2}/index.tmpl", "{{.var1}},{{.path_variables.var2}}", "", ""},
+	templates := []testTemplate{
+		{"v1/{var1}/v2/{var2}/index.tmpl", "{{.var1}},{{.path_variables.var2}}"},
 	}
-	dir := createTestDir(testCases)
-	defer os.RemoveAll(dir)
-	fs := os.DirFS(dir)
-	router := NewRouter(fs)
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
 	req := httptest.NewRequest("GET", "/v1/value1/v2/value2", nil)
 	rec := httptest.NewRecorder()
 	resolverCalled := false
@@ -240,6 +218,7 @@ func TestRouter_GetResolver(t *testing.T) {
 			return "resolvedValue", nil
 		}),
 	)
+
 	router.ServeHTTP(rec, req)
 
 	resp := rec.Result()
@@ -249,13 +228,12 @@ func TestRouter_GetResolver(t *testing.T) {
 }
 
 func TestRouter_Post(t *testing.T) {
-	templates := []templateTest{
-		{"v1/{var1}/path/index.tmpl", "{{.path_variables.var1}},{{.var1}}", "", ""},
+	templates := []testTemplate{
+		{"v1/{var1}/path/index.tmpl", "{{.path_variables.var1}},{{.var1}}"},
 	}
-	dir := createTestDir(templates)
-	defer os.RemoveAll(dir)
-	fs := os.DirFS(dir)
-	router := NewRouter(fs)
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
 	handlerCalled := false
 	router.UseResolver("var1",
 		Post(func(w http.ResponseWriter, r *http.Request) (string, error) {
@@ -271,7 +249,6 @@ func TestRouter_Post(t *testing.T) {
 	req := httptest.NewRequest("POST", "/v1/val/path", strings.NewReader(data.Encode()))
 	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Add("Content-Length", strconv.Itoa(len(data.Encode())))
-
 	rec := httptest.NewRecorder()
 
 	router.ServeHTTP(rec, req)
