@@ -1,12 +1,14 @@
 package router
 
 import (
-	"context"
 	"io"
 	"log"
+	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -92,25 +94,34 @@ func createTemplate(path, content string) error {
 // - error handling
 // - - logging (return error if some rendering failed)
 // - - fallback templates (unexpected error, auth error ...)
-// - PATCH/POST/UPDATE/DELETE
+// - CRUD
+// - - POST
+// - - UPDATE
+// - - PATCH
+// - - PUT
+// - - DELETE
+// - - SSE
 // - - "UsePoster/UsePatcher/UseUpdater" (different name ?)
 // - - validation? (needed?)
 //
+// FEATURES:
+// - cache data to render template for quick browser refreshes
+//
 // EDGE CASES:
+// - parse path variables before calling resolvers
 // - make header case insensitive (double check if needed)
-// - what about paths where a parent has an index.tmpl?
 // - make configurable
 // - - default layout
 // - - default file extension
 // - - always skip resolvers
-// - how to integrate middleware (authentication, authorization)
+// - how to integrate middleware? (authentication, authorization)
 
 func TestRouter(t *testing.T) {
 	testCases := []templateTest{
 		{"test/index.tmpl", "test", "/test", "test"},
 		{"sub/test2/index.tmpl", "test2", "/sub/test2", "test2"},
-		{"v1/{var1}/index.tmpl", "{{.var1}}", "/v1/value1", "value1"},
-		{"v1/{var1}/v2/{var2}/index.tmpl", "{{.var1}},{{.var2}}", "/v1/value1/v2/value2", "value1,value2"},
+		{"v1/{var1}/index.tmpl", "{{.path_variables.var1}}", "/v1/value1", "value1"},
+		{"v1/{var1}/v2/{var2}/index.tmpl", "{{.path_variables.var1}},{{.path_variables.var2}}", "/v1/value1/v2/value2", "value1,value2"},
 	}
 	dir := createTestDir(testCases)
 	defer os.RemoveAll(dir)
@@ -130,30 +141,6 @@ func TestRouter(t *testing.T) {
 			assert.Equal(t, test.expectedRender, string(body))
 		})
 	}
-}
-
-func TestRouter_UseResolver(t *testing.T) {
-	testCases := []templateTest{
-		{"v1/{var1}/v2/{var2}/index.tmpl", "{{.var1}},{{.var2}}", "/v1/value1/v2/value2", "value1,value2"},
-	}
-	dir := createTestDir(testCases)
-	defer os.RemoveAll(dir)
-	fs := os.DirFS(dir)
-	router := NewRouter(fs)
-	req := httptest.NewRequest("GET", "/v1/value1/v2/value2", nil)
-	rec := httptest.NewRecorder()
-	resolverCalled := false
-	router.Use("var1", func(ctx context.Context, value string) any {
-		resolverCalled = true
-		assert.Equal(t, "value1", value)
-		return "resolvedValue"
-	})
-	router.ServeHTTP(rec, req)
-
-	resp := rec.Result()
-	body, _ := io.ReadAll(resp.Body)
-	assert.True(t, resolverCalled, "resolver wasn't called")
-	assert.Equal(t, "resolvedValue,value2", string(body))
 }
 
 func TestRouter_ReferencingAnotherTemplate(t *testing.T) {
@@ -228,4 +215,70 @@ func TestRouter_LayoutHeader(t *testing.T) {
 
 	body, _ := io.ReadAll(resp.Body)
 	assert.Equal(t, "custom-layout-start  layout-content  custom-layout-end", string(body))
+}
+
+func TestRouter_GetResolver(t *testing.T) {
+	testCases := []templateTest{
+		{"v1/{var1}/v2/{var2}/index.tmpl", "{{.var1}},{{.path_variables.var2}}", "", ""},
+	}
+	dir := createTestDir(testCases)
+	defer os.RemoveAll(dir)
+	fs := os.DirFS(dir)
+	router := NewRouter(fs)
+	req := httptest.NewRequest("GET", "/v1/value1/v2/value2", nil)
+	rec := httptest.NewRecorder()
+	resolverCalled := false
+
+	router.UseResolver(
+		"var1",
+		Get(func(r *http.Request, value string) (string, error) {
+			pathVariables := r.Context().Value(pathVariablesKey).(PathVariables)
+			resolverCalled = true
+			assert.Equal(t, "value1", value)
+			assert.Equal(t, "value1", pathVariables["var1"])
+			assert.Equal(t, "value2", pathVariables["var2"])
+			return "resolvedValue", nil
+		}),
+	)
+	router.ServeHTTP(rec, req)
+
+	resp := rec.Result()
+	body, _ := io.ReadAll(resp.Body)
+	assert.True(t, resolverCalled, "resolver wasn't called")
+	assert.Equal(t, "resolvedValue,value2", string(body))
+}
+
+func TestRouter_Post(t *testing.T) {
+	templates := []templateTest{
+		{"v1/{var1}/path/index.tmpl", "{{.path_variables.var1}},{{.var1}}", "", ""},
+	}
+	dir := createTestDir(templates)
+	defer os.RemoveAll(dir)
+	fs := os.DirFS(dir)
+	router := NewRouter(fs)
+	handlerCalled := false
+	router.UseResolver("var1",
+		Post(func(w http.ResponseWriter, r *http.Request) (string, error) {
+			r.ParseForm()
+			w.WriteHeader(202)
+			assert.Equal(t, "value1", r.PostForm.Get("input1"))
+			handlerCalled = true
+			return "resolvedValue", nil
+		}))
+
+	data := url.Values{}
+	data.Add("input1", "value1")
+	req := httptest.NewRequest("POST", "/v1/val/path", strings.NewReader(data.Encode()))
+	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Add("Content-Length", strconv.Itoa(len(data.Encode())))
+
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+	resp := rec.Result()
+
+	assert.True(t, handlerCalled, "POST handler wasn't called")
+	assert.Equal(t, resp.StatusCode, 202)
+	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, "val,resolvedValue", string(body))
 }

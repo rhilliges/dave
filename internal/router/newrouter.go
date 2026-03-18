@@ -10,12 +10,59 @@ import (
 	"strings"
 )
 
-type ResolverFunc func(ctx context.Context, value string) any
+type (
+	HandlerFunc func(ctx context.Context, r *http.Request) any
+)
+type ResolverConfFunc func(router *Router, varName string)
+
+type ResolverFunc func(w http.ResponseWriter, r *http.Request) (any, error)
 
 type Router struct {
 	fs        fs.FS
-	resolvers map[string]ResolverFunc
+	resolvers map[string]map[string]ResolverFunc
 	templates *template.Template
+}
+
+type PathVariables map[string]string
+
+var pathVariablesKey = new(PathVariables)
+
+func (router *Router) UseResolver(varName string, configFunc ResolverConfFunc) {
+	configFunc(router, varName)
+}
+
+func Get[K any](handler func(r *http.Request, value string) (K, error)) ResolverConfFunc {
+	return func(router *Router, varName string) {
+		variableResolvers := router.resolvers[varName]
+		if variableResolvers == nil {
+			router.resolvers[varName] = make(map[string]ResolverFunc)
+		}
+		router.resolvers[varName][http.MethodGet] = func(w http.ResponseWriter, r *http.Request) (any, error) {
+			pathVariables := r.Context().Value(pathVariablesKey).(PathVariables)
+			varValue := pathVariables[varName]
+			return handler(r, varValue)
+		}
+	}
+}
+
+func Post[K any](handler func(w http.ResponseWriter, r *http.Request) (K, error)) ResolverConfFunc {
+	return func(router *Router, varName string) {
+		variableResolvers := router.resolvers[varName]
+		if variableResolvers == nil {
+			router.resolvers[varName] = make(map[string]ResolverFunc)
+		}
+		router.resolvers[varName]["POST"] = func(w http.ResponseWriter, r *http.Request) (any, error) {
+			return handler(w, r)
+		}
+	}
+}
+
+// func Post(request, value string) (string, error func(r *http.Request, value string) (string, error)) ResolverConfFunc {
+// 	panic("unimplemented")
+// }
+
+func NewRouter(fs fs.FS) *Router {
+	return &Router{fs: fs, resolvers: make(map[string]map[string]ResolverFunc)}
 }
 
 type render struct {
@@ -24,27 +71,23 @@ type render struct {
 	data     map[string]any
 }
 
-func NewRouter(fs fs.FS) *Router {
-	return &Router{fs, make(map[string]ResolverFunc), template.New("root")}
-}
-
-func (router *Router) Use(s string, resolver ResolverFunc) {
-	router.resolvers[s] = resolver
-}
-
 func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	err := r.ParseForm()
+	log.Println(err)
+	// log.Println(r.PostForm.Get("input1"))
+	// log.Println(r.Form.Get("input1"))
+	// log.Println(r.Form)
+	// log.Println(r.PostForm)
 	router.templates = scanTemplates(router.fs)
-	log.Println(router.templates.DefinedTemplates())
 
-	render, _ := router.getRender(r)
-	log.Println(render)
+	render, _ := router.getRender(w, r)
 	if render.layout == "" {
 		err := router.templates.ExecuteTemplate(w, render.template, render.data)
 		log.Println(err)
 		return
 	}
 	content := &strings.Builder{}
-	err := router.templates.ExecuteTemplate(content, render.template, render.data)
+	err = router.templates.ExecuteTemplate(content, render.template, render.data)
 	log.Println(err)
 	err = router.templates.ExecuteTemplate(w, render.layout, map[string]string{"content": content.String()})
 	log.Println(err)
@@ -81,18 +124,72 @@ func scanTemplates(root fs.FS) *template.Template {
 	return rootTemplate
 }
 
-func (router *Router) getRender(r *http.Request) (*render, error) {
+func (router *Router) getRender(w http.ResponseWriter, r *http.Request) (*render, error) {
 	render := &render{}
 	templateName := r.Header.Get("D-TEMPLATE")
 	if templateName == "" {
 		templateName = "index"
 	}
 	reqPath := strings.Join([]string{r.URL.Path, templateName}, "/")
-	reqSegments := strings.Split(reqPath[1:], "/")
-	values := make(map[string]any)
-	templatePath := ""
 
-	for _, v := range router.templates.Templates() {
+	data := make(map[string]any)
+
+	templatePath, pathVariables := parseRequestPath(router.templates, reqPath)
+	data["path_variables"] = pathVariables
+
+	resolverCtx := context.WithValue(r.Context(), pathVariablesKey, pathVariables)
+	resolverReq := r.WithContext(resolverCtx)
+
+	keys := make([]string, 0, len(pathVariables))
+	for k := range pathVariables {
+		keys = append(keys, k)
+	}
+
+	for name := range pathVariables {
+		resolvers := router.resolvers[name]
+		if resolvers == nil {
+			continue
+		}
+		var resolver ResolverFunc
+		if name == keys[len(keys)-1] {
+			resolver = resolvers[r.Method]
+		} else {
+			resolver = resolvers[http.MethodGet]
+		}
+		if resolver == nil {
+			continue
+		}
+
+		d, _ := resolver(w, resolverReq)
+		data[name] = d
+	}
+	if templatePath == "" {
+		return nil, nil // return error (not found)
+	}
+	render.data = data
+	render.template = templatePath
+
+	layoutPath := r.Header.Get("D-LAYOUT")
+	if layoutPath == "" {
+		layoutPath = "default"
+	}
+	layoutPath = strings.Join([]string{"layouts", layoutPath}, "/")
+	layoutTemplate := router.templates.Lookup(layoutPath)
+	if layoutTemplate == nil {
+		log.Printf("layout not found: %s, rendering w/o layout", layoutPath)
+		return render, nil
+	}
+
+	render.layout = layoutPath
+	return render, nil
+}
+
+func parseRequestPath(templates *template.Template, path string) (string, PathVariables) {
+	reqSegments := strings.Split(path[1:], "/")
+	templatePath := ""
+	pathVariables := PathVariables{}
+
+	for _, v := range templates.Templates() {
 		if v.Name() == "root" {
 			continue
 		}
@@ -108,14 +205,7 @@ func (router *Router) getRender(r *http.Request) (*render, error) {
 			} else {
 				if strings.HasPrefix(seg, "{") && strings.HasSuffix(seg, "}") {
 					varName := seg[1 : len(seg)-1]
-					resolver := router.resolvers[varName]
-					log.Println(varName)
-					if resolver != nil {
-						values[varName] = resolver(r.Context(), reqSegments[i])
-					} else {
-						values[varName] = reqSegments[i]
-					}
-					log.Println(values[varName])
+					pathVariables[varName] = reqSegments[i]
 				} else {
 					found = false
 					break
@@ -125,29 +215,10 @@ func (router *Router) getRender(r *http.Request) (*render, error) {
 		if found {
 			templatePath = path
 		} else {
-			values = make(map[string]any)
+			pathVariables = PathVariables{}
 		}
 	}
-	if templatePath == "" {
-		return nil, nil // return error (not found)
-	}
-	render.data = values
-	render.template = templatePath
-	log.Println(render.data)
-
-	layoutPath := r.Header.Get("D-LAYOUT")
-	if layoutPath == "" {
-		layoutPath = "default"
-	}
-	layoutPath = strings.Join([]string{"layouts", layoutPath}, "/")
-	layoutTemplate := router.templates.Lookup(layoutPath)
-	if layoutTemplate == nil {
-		log.Printf("layout not found: %s, rendering w/o layout", layoutPath)
-		return render, nil
-	}
-
-	render.layout = layoutPath
-	return render, nil
+	return templatePath, pathVariables
 }
 
 func stripTemplateSuffix(t string) string {
