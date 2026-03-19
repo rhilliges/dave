@@ -35,8 +35,10 @@ func (router *Router) UseGlobals(configFunc ...GlobalConfFunc) {
 	}
 }
 
-func (router *Router) UseResolver(varName string, configFunc ResolverConfFunc) {
-	configFunc(router, varName)
+func (router *Router) UseResolver(varName string, configFunc ...ResolverConfFunc) {
+	for _, f := range configFunc {
+		f(router, varName)
+	}
 }
 
 func Global(name string, globalFunc func() any) GlobalConfFunc {
@@ -97,8 +99,8 @@ func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	render, err := router.getRender(w, r)
 
 	globals := make(map[string]any)
-	for name, f := range router.globals {
-		globals[name] = f()
+	for name, global := range router.globals {
+		globals[name] = global()
 	}
 	render.data["globals"] = globals
 
@@ -171,7 +173,9 @@ func (router *Router) getRender(w http.ResponseWriter, r *http.Request) (*Render
 	data["path_variables"] = pathVariables
 	if templatePath == "" {
 		w.WriteHeader(http.StatusNotFound)
-		return nil, NotFound(fmt.Errorf("no template at %s", reqPath))
+		return &Render{
+			data: data,
+		}, NotFound(fmt.Errorf("no template at %s", reqPath))
 	}
 
 	resolverCtx := context.WithValue(r.Context(), PathVariablesKey, pathVariables)

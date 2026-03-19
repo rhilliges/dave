@@ -64,20 +64,17 @@ func prepareTest(files []testTemplate) (*Router, func()) {
 // - layouts
 // - - default layout - done
 // - - LAYOUT header - done
-// - - deep-link layout file (comment in the template?)
-// - - layout resolver (HX-Request header example)
+// - - layout resolvers (HX-Request header example, D_LAYOUT default implementation)
 // - SKIP_RESOLVER header (make configurable)
 // - SKIP_GLOBAL_VALUES header (make configurable)
 // - globals
 // - - global available values - done
-// - - global available functions (resolvers?)
-// - - i18n
 // - error handling
 // - - logging (log unexpected errors if some rendering failed)
 // - - validation error during POST/PATCH/PUT - done (use HX-Location header)
 // - - redirect error - done (use HX-Location header)
 // - - fallback templates (unexpected error, not found) - done
-// - - custom fallback templates (auth error)
+// - custom renderer
 //
 // FEATURES:
 // - cache data to render template for quick browser refreshes
@@ -94,10 +91,23 @@ func prepareTest(files []testTemplate) (*Router, func()) {
 // - how to integrate middleware? (authentication, authorization)
 
 // DOCUMENTATION:
+// - requets lifecycle
 // - - template priority: index -> D_TEMPLATE -> HandlerMethod.template
-// - - layout priority: default -> D_LAYOUT -> HandlerMethod.layout
+// - - layout priority: default -> layout resolvers -> HandlerMethod.layout
+// - only write error response codes, otherwise could hide error response codes from previous handlers
+// - globals
+// - - i18n example implementation for values and functions
+// - available headers
 // - HandlerMethod:
 // - - router.HandlerMethod is available for full control but should better not be used (use HX-Location)
+
+// What to do next:
+// - global template functions (resolvers?)
+// - content response headers (html, text, json)
+// - logging (log unexpected errors if some rendering failed)
+// - custom fallback templates (auth error)
+// - layout resolvers (HX-Request header example, D_LAYOUT default implementation)
+// - figure out middlewares
 
 func TestRouter(t *testing.T) {
 	templates := []testTemplate{
@@ -263,19 +273,32 @@ func TestRouter_Get(t *testing.T) {
 
 func TestRouter_Post(t *testing.T) {
 	templates := []testTemplate{
-		{"v1/{var1}/path/index.tmpl", "{{.path_variables.var1}},{{.var1}}"},
+		{"v1/{var1}/{var2}/index.tmpl", "{{.path_variables.var1}},{{.var1}},{{.var2}}"},
 	}
 	router, cleanup := prepareTest(templates)
 	defer cleanup()
 
-	handlerCalled := false
-	router.UseResolver("var1",
+	get1HandlerCalled := false
+	get2HandlerCalled := false
+	postHandlerCalled := false
+	router.UseResolver(
+		"var1",
+		Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
+			get1HandlerCalled = true
+			return "resolved1", nil
+		}),
+	)
+	router.UseResolver("var2",
+		Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
+			get2HandlerCalled = true
+			return nil, nil
+		}),
 		Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
 			r.ParseForm()
 			w.WriteHeader(202)
 			assert.Equal(t, "value1", r.PostForm.Get("input1"))
-			handlerCalled = true
-			return "resolvedValue", nil
+			postHandlerCalled = true
+			return "postValue", nil
 		}))
 
 	data := url.Values{}
@@ -288,10 +311,12 @@ func TestRouter_Post(t *testing.T) {
 	router.ServeHTTP(rec, req)
 	resp := rec.Result()
 
-	assert.True(t, handlerCalled, "POST handler wasn't called")
+	assert.True(t, postHandlerCalled, "POST handler wasn't called")
+	assert.True(t, get1HandlerCalled, "var1 GET handler should have been called")
+	assert.False(t, get2HandlerCalled, "var2 GET handler shouldn't have been called")
 	assert.Equal(t, resp.StatusCode, 202)
 	body, _ := io.ReadAll(resp.Body)
-	assert.Equal(t, "val,resolvedValue", string(body))
+	assert.Equal(t, "val,resolved1,postValue", string(body))
 }
 
 func TestRouter_Put(t *testing.T) {
