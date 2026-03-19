@@ -69,7 +69,7 @@ func prepareTest(files []testTemplate) (*Router, func()) {
 // - SKIP_RESOLVER header (make configurable)
 // - SKIP_GLOBAL_VALUES header (make configurable)
 // - globals
-// - - global available values
+// - - global available values - done
 // - - global available functions (resolvers?)
 // - - i18n
 // - error handling
@@ -203,7 +203,33 @@ func TestRouter_LayoutHeader(t *testing.T) {
 	assert.Equal(t, "custom-layout-start  layout-content  custom-layout-end", string(body))
 }
 
-func TestRouter_GetResolver(t *testing.T) {
+func TestRouter_UseGlobals(t *testing.T) {
+	templates := []testTemplate{
+		{"v1/index.tmpl", "{{.globals.global1}},{{.globals.global2}}"},
+	}
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
+	req := httptest.NewRequest("GET", "/v1", nil)
+	rec := httptest.NewRecorder()
+
+	router.UseGlobals(
+		Global("global1", func() any {
+			return "value1"
+		}),
+		Global("global2", func() any {
+			return "value2"
+		}),
+	)
+
+	router.ServeHTTP(rec, req)
+
+	resp := rec.Result()
+	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, "value1,value2", string(body))
+}
+
+func TestRouter_Get(t *testing.T) {
 	templates := []testTemplate{
 		{"v1/{var1}/v2/{var2}/index.tmpl", "{{.var1}},{{.path_variables.var2}}"},
 	}
@@ -217,7 +243,7 @@ func TestRouter_GetResolver(t *testing.T) {
 	router.UseResolver(
 		"var1",
 		Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
-			pathVariables := r.Context().Value(pathVariablesKey).(PathVariables)
+			pathVariables := r.Context().Value(PathVariablesKey).(PathVariables)
 			resolverCalled = true
 			value := VariableValue(r, "var1")
 			assert.Equal(t, "value1", value)

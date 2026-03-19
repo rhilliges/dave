@@ -12,42 +12,57 @@ import (
 	"strings"
 )
 
-type ResolverConfFunc func(router *Router, varName string)
-
-type ResolverFunc func(w http.ResponseWriter, r *http.Request) (any, error)
+type (
+	ResolverConfFunc func(router *Router, varName string)
+	ResolverFunc     func(w http.ResponseWriter, r *http.Request) (any, error)
+	GlobalConfFunc   func(router *Router)
+)
 
 type Router struct {
 	fs        fs.FS
 	resolvers map[string]map[string]ResolverFunc
+	globals   map[string]func() any
 	templates *template.Template
 }
 
 type PathVariables map[string]string
 
-var pathVariablesKey = new(PathVariables)
+var PathVariablesKey = &PathVariables{}
+
+func (router *Router) UseGlobals(configFunc ...GlobalConfFunc) {
+	for _, f := range configFunc {
+		f(router)
+	}
+}
 
 func (router *Router) UseResolver(varName string, configFunc ResolverConfFunc) {
 	configFunc(router, varName)
 }
 
-func Get(handler ResolverFunc) ResolverConfFunc {
-	return MethodHandler(http.MethodGet, handler)
+func Global(name string, globalFunc func() any) GlobalConfFunc {
+	return func(router *Router) {
+		router.globals[name] = globalFunc
+	}
 }
 
-func Post(handler ResolverFunc) ResolverConfFunc {
-	return MethodHandler(http.MethodPost, handler)
+func Get(resolverFunc ResolverFunc) ResolverConfFunc {
+	return MethodHandler(http.MethodGet, resolverFunc)
 }
 
-func Put(handler ResolverFunc) ResolverConfFunc {
-	return MethodHandler(http.MethodPut, handler)
+func Post(resolverFunc ResolverFunc) ResolverConfFunc {
+	return MethodHandler(http.MethodPost, resolverFunc)
 }
 
-func Patch(handler ResolverFunc) ResolverConfFunc {
-	return MethodHandler(http.MethodPatch, handler)
+func Put(resoverFunc ResolverFunc) ResolverConfFunc {
+	return MethodHandler(http.MethodPut, resoverFunc)
 }
 
-func Delete(handler ResolverFunc) ResolverConfFunc {
-	return MethodHandler(http.MethodDelete, handler)
+func Patch(resolverFunc ResolverFunc) ResolverConfFunc {
+	return MethodHandler(http.MethodPatch, resolverFunc)
+}
+
+func Delete(resoverFunc ResolverFunc) ResolverConfFunc {
+	return MethodHandler(http.MethodDelete, resoverFunc)
 }
 
 func MethodHandler(m string, handler ResolverFunc) ResolverConfFunc {
@@ -63,7 +78,11 @@ func MethodHandler(m string, handler ResolverFunc) ResolverConfFunc {
 }
 
 func NewRouter(fs fs.FS) *Router {
-	return &Router{fs: fs, resolvers: make(map[string]map[string]ResolverFunc)}
+	return &Router{
+		fs:        fs,
+		resolvers: make(map[string]map[string]ResolverFunc),
+		globals:   make(map[string]func() any),
+	}
 }
 
 type Render struct {
@@ -76,6 +95,13 @@ func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	router.templates = scanTemplates(router.fs)
 
 	render, err := router.getRender(w, r)
+
+	globals := make(map[string]any)
+	for name, f := range router.globals {
+		globals[name] = f()
+	}
+	render.data["globals"] = globals
+
 	if err != nil {
 		daveError := &daveError{}
 		if errors.As(err, daveError) {
@@ -148,7 +174,7 @@ func (router *Router) getRender(w http.ResponseWriter, r *http.Request) (*Render
 		return nil, NotFound(fmt.Errorf("no template at %s", reqPath))
 	}
 
-	resolverCtx := context.WithValue(r.Context(), pathVariablesKey, pathVariables)
+	resolverCtx := context.WithValue(r.Context(), PathVariablesKey, pathVariables)
 	resolverReq := r.WithContext(resolverCtx)
 
 	keys := make([]string, 0, len(pathVariables))
@@ -243,7 +269,7 @@ func stripTemplateSuffix(t string) string {
 }
 
 func VariableValue(r *http.Request, varName string) any {
-	pathVariables := r.Context().Value(pathVariablesKey).(PathVariables)
+	pathVariables := r.Context().Value(PathVariablesKey).(PathVariables)
 	return pathVariables[varName]
 }
 
