@@ -2,6 +2,8 @@ package router
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"html/template"
 	"io"
 	"io/fs"
@@ -28,18 +30,8 @@ func (router *Router) UseResolver(varName string, configFunc ResolverConfFunc) {
 	configFunc(router, varName)
 }
 
-func Get(handler func(r *http.Request, value string) (any, error)) ResolverConfFunc {
-	return func(router *Router, varName string) {
-		variableResolvers := router.resolvers[varName]
-		if variableResolvers == nil {
-			router.resolvers[varName] = make(map[string]ResolverFunc)
-		}
-		router.resolvers[varName][http.MethodGet] = func(w http.ResponseWriter, r *http.Request) (any, error) {
-			pathVariables := r.Context().Value(pathVariablesKey).(PathVariables)
-			varValue := pathVariables[varName]
-			return handler(r, varValue)
-		}
-	}
+func Get(handler ResolverFunc) ResolverConfFunc {
+	return MethodHandler(http.MethodGet, handler)
 }
 
 func Post(handler ResolverFunc) ResolverConfFunc {
@@ -81,11 +73,23 @@ type Render struct {
 }
 
 func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	err := r.ParseForm()
-	log.Println(err)
 	router.templates = scanTemplates(router.fs)
 
-	render, _ := router.getRender(w, r)
+	render, err := router.getRender(w, r)
+	if err != nil {
+		daveError := &daveError{}
+		if errors.As(err, daveError) {
+			t := router.templates.Lookup(daveError.fallback)
+			if t != nil {
+				render.data["error"] = daveError.cause
+				router.templates.ExecuteTemplate(w, daveError.fallback, render.data)
+			} else {
+				w.Write([]byte(fmt.Sprintf("%s: %s", daveError.message, daveError.cause)))
+			}
+		}
+		// lookup custom fallback
+		return
+	}
 	log.Println(render)
 	if render.layout == "" {
 		err = router.templates.ExecuteTemplate(w, render.template, render.data)
@@ -139,6 +143,10 @@ func (router *Router) getRender(w http.ResponseWriter, r *http.Request) (*Render
 
 	templatePath, pathVariables := parseRequestPath(router.templates, reqPath)
 	data["path_variables"] = pathVariables
+	if templatePath == "" {
+		w.WriteHeader(http.StatusNotFound)
+		return nil, NotFound(fmt.Errorf("no template at %s", reqPath))
+	}
 
 	resolverCtx := context.WithValue(r.Context(), pathVariablesKey, pathVariables)
 	resolverReq := r.WithContext(resolverCtx)
@@ -163,11 +171,13 @@ func (router *Router) getRender(w http.ResponseWriter, r *http.Request) (*Render
 			continue
 		}
 
-		d, _ := resolver(w, resolverReq)
+		d, err := resolver(w, resolverReq)
+		if err != nil {
+			return &Render{
+				data: data,
+			}, err
+		}
 		data[name] = d
-	}
-	if templatePath == "" {
-		return nil, nil // return error (not found)
 	}
 	render.data = data
 	render.template = templatePath
@@ -230,4 +240,35 @@ func stripTemplateSuffix(t string) string {
 		return t
 	}
 	return t[:i]
+}
+
+func VariableValue(r *http.Request, varName string) any {
+	pathVariables := r.Context().Value(pathVariablesKey).(PathVariables)
+	return pathVariables[varName]
+}
+
+type daveError struct {
+	message  string
+	fallback string
+	cause    error
+}
+
+func (daveError daveError) Error() string {
+	return daveError.message
+}
+
+func NotFound(cause error) error {
+	return daveError{
+		message:  "not found",
+		fallback: "fallback/not_found",
+		cause:    cause,
+	}
+}
+
+func Unexpected(cause error) error {
+	return daveError{
+		message:  "unexpected error",
+		fallback: "fallback/unexpected_error",
+		cause:    cause,
+	}
 }

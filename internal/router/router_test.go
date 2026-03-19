@@ -1,6 +1,7 @@
 package router
 
 import (
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -53,6 +54,11 @@ func prepareTest(files []testTemplate) (*Router, func()) {
 // - file based routing - done
 // - path variables - done
 // - resolvers - done
+// - CRUD - done
+// - - POST - done
+// - - PUT - done
+// - - PATCH - done
+// - - DELETE - done
 // - components (nested templates) - done
 // - TEMPLATE_NAME header - done
 // - layouts
@@ -60,11 +66,6 @@ func prepareTest(files []testTemplate) (*Router, func()) {
 // - - LAYOUT header - done
 // - - deep-link layout file (comment in the template?)
 // - - layout resolver (HX-Request header example)
-// - CRUD
-// - - POST - done
-// - - PUT - done
-// - - PATCH
-// - - DELETE
 // - SKIP_RESOLVER header (make configurable)
 // - SKIP_GLOBAL_VALUES header (make configurable)
 // - globals
@@ -72,10 +73,11 @@ func prepareTest(files []testTemplate) (*Router, func()) {
 // - - global available functions (resolvers?)
 // - - i18n
 // - error handling
-// - - logging (return error if some rendering failed)
-// - - validation error during POST/PATCH/PUT
-// - - redirect error
-// - - fallback templates (unexpected error, auth error ...)
+// - - logging (log unexpected errors if some rendering failed)
+// - - validation error during POST/PATCH/PUT - done (use HX-Location header)
+// - - redirect error - done (use HX-Location header)
+// - - fallback templates (unexpected error, not found) - done
+// - - custom fallback templates (auth error)
 //
 // FEATURES:
 // - cache data to render template for quick browser refreshes
@@ -214,9 +216,10 @@ func TestRouter_GetResolver(t *testing.T) {
 
 	router.UseResolver(
 		"var1",
-		Get(func(r *http.Request, value string) (any, error) {
+		Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
 			pathVariables := r.Context().Value(pathVariablesKey).(PathVariables)
 			resolverCalled = true
+			value := VariableValue(r, "var1")
 			assert.Equal(t, "value1", value)
 			assert.Equal(t, "value1", pathVariables["var1"])
 			assert.Equal(t, "value2", pathVariables["var2"])
@@ -364,4 +367,124 @@ func TestRouter_Delete(t *testing.T) {
 	assert.Equal(t, resp.StatusCode, 202)
 	body, _ := io.ReadAll(resp.Body)
 	assert.Equal(t, "val,resolvedValue", string(body))
+}
+
+func TestRouter_TemplateNotFoundError(t *testing.T) {
+	templates := []testTemplate{}
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
+	req := httptest.NewRequest("GET", "/path/to/nothing", nil)
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+	resp := rec.Result()
+
+	assert.Equal(t, resp.StatusCode, http.StatusNotFound)
+	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, "not found: no template at /path/to/nothing/index", string(body))
+}
+
+func TestRouter_ResourceNotFoundError(t *testing.T) {
+	templates := []testTemplate{
+		{"v1/{var1}/v2/{var2}/index.tmpl", ""},
+	}
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
+	req := httptest.NewRequest("GET", "/v1/value1/v2/value2", nil)
+	rec := httptest.NewRecorder()
+
+	router.UseResolver(
+		"var1",
+		Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
+			value := VariableValue(r, "var1")
+			return nil, NotFound(fmt.Errorf("no entity found for %s", value))
+		}),
+	)
+
+	router.ServeHTTP(rec, req)
+
+	resp := rec.Result()
+	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, resp.StatusCode, http.StatusOK, "expected status OK because resolver didn't set response code")
+	assert.Equal(t, "not found: no entity found for value1", string(body))
+}
+
+func TestRouter_UnexpectedError(t *testing.T) {
+	templates := []testTemplate{
+		{"v1/{var1}/v2/{var2}/index.tmpl", ""},
+	}
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
+	req := httptest.NewRequest("GET", "/v1/value1/v2/value2", nil)
+	rec := httptest.NewRecorder()
+
+	router.UseResolver(
+		"var1",
+		Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
+			value := VariableValue(r, "var1")
+			return nil, Unexpected(fmt.Errorf("some unexpected error resolving var1=%s", value))
+		}),
+	)
+
+	router.ServeHTTP(rec, req)
+
+	resp := rec.Result()
+	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, "unexpected error: some unexpected error resolving var1=value1", string(body))
+}
+
+func TestRouter_UnexpectedErrorFallback(t *testing.T) {
+	templates := []testTemplate{
+		{"v1/{var1}/v2/{var2}/index.tmpl", ""},
+		{"fallback/unexpected_error.tmpl", "500, unexpected_error: {{.error}}"},
+	}
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
+	req := httptest.NewRequest("GET", "/v1/value1/v2/value2", nil)
+	rec := httptest.NewRecorder()
+
+	router.UseResolver(
+		"var1",
+		Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
+			value := VariableValue(r, "var1")
+			return nil, Unexpected(fmt.Errorf("some unexpected error resolving var1=%s", value))
+		}),
+	)
+
+	router.ServeHTTP(rec, req)
+
+	resp := rec.Result()
+	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, "500, unexpected_error: some unexpected error resolving var1=value1", string(body))
+}
+
+func TestRouter_ResourceNotFoundErrorFallback(t *testing.T) {
+	templates := []testTemplate{
+		{"v1/{var1}/v2/{var2}/index.tmpl", ""},
+		{"fallback/not_found.tmpl", "404, not found: {{.error}}"},
+	}
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
+	req := httptest.NewRequest("GET", "/v1/value1/v2/value2", nil)
+	rec := httptest.NewRecorder()
+
+	router.UseResolver(
+		"var1",
+		Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
+			value := VariableValue(r, "var1")
+			return nil, NotFound(fmt.Errorf("no entity found for %s", value))
+		}),
+	)
+
+	router.ServeHTTP(rec, req)
+
+	resp := rec.Result()
+	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, resp.StatusCode, http.StatusOK, "expected status OK because resolver didn't set response code")
+	assert.Equal(t, "404, not found: no entity found for value1", string(body))
 }
