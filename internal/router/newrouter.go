@@ -10,9 +10,6 @@ import (
 	"strings"
 )
 
-type (
-	HandlerFunc func(ctx context.Context, r *http.Request) any
-)
 type ResolverConfFunc func(router *Router, varName string)
 
 type ResolverFunc func(w http.ResponseWriter, r *http.Request) (any, error)
@@ -53,6 +50,14 @@ func Put(handler ResolverFunc) ResolverConfFunc {
 	return MethodHandler(http.MethodPut, handler)
 }
 
+func Patch(handler ResolverFunc) ResolverConfFunc {
+	return MethodHandler(http.MethodPatch, handler)
+}
+
+func Delete(handler ResolverFunc) ResolverConfFunc {
+	return MethodHandler(http.MethodDelete, handler)
+}
+
 func MethodHandler(m string, handler ResolverFunc) ResolverConfFunc {
 	return func(router *Router, varName string) {
 		variableResolvers := router.resolvers[varName]
@@ -69,7 +74,7 @@ func NewRouter(fs fs.FS) *Router {
 	return &Router{fs: fs, resolvers: make(map[string]map[string]ResolverFunc)}
 }
 
-type render struct {
+type Render struct {
 	layout   string
 	template string
 	data     map[string]any
@@ -78,23 +83,17 @@ type render struct {
 func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	err := r.ParseForm()
 	log.Println(err)
-	// log.Println(r.PostForm.Get("input1"))
-	// log.Println(r.Form.Get("input1"))
-	// log.Println(r.Form)
-	// log.Println(r.PostForm)
 	router.templates = scanTemplates(router.fs)
 
 	render, _ := router.getRender(w, r)
+	log.Println(render)
 	if render.layout == "" {
-		err := router.templates.ExecuteTemplate(w, render.template, render.data)
-		log.Println(err)
+		err = router.templates.ExecuteTemplate(w, render.template, render.data)
 		return
 	}
 	content := &strings.Builder{}
 	err = router.templates.ExecuteTemplate(content, render.template, render.data)
-	log.Println(err)
 	err = router.templates.ExecuteTemplate(w, render.layout, map[string]string{"content": content.String()})
-	log.Println(err)
 }
 
 func scanTemplates(root fs.FS) *template.Template {
@@ -128,8 +127,8 @@ func scanTemplates(root fs.FS) *template.Template {
 	return rootTemplate
 }
 
-func (router *Router) getRender(w http.ResponseWriter, r *http.Request) (*render, error) {
-	render := &render{}
+func (router *Router) getRender(w http.ResponseWriter, r *http.Request) (*Render, error) {
+	render := &Render{}
 	templateName := r.Header.Get("D-TEMPLATE")
 	if templateName == "" {
 		templateName = "index"

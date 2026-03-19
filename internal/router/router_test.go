@@ -58,7 +58,7 @@ func prepareTest(files []testTemplate) (*Router, func()) {
 // - layouts
 // - - default layout - done
 // - - LAYOUT header - done
-// - - deep-link layout file
+// - - deep-link layout file (comment in the template?)
 // - - layout resolver (HX-Request header example)
 // - CRUD
 // - - POST - done
@@ -74,6 +74,7 @@ func prepareTest(files []testTemplate) (*Router, func()) {
 // - error handling
 // - - logging (return error if some rendering failed)
 // - - validation error during POST/PATCH/PUT
+// - - redirect error
 // - - fallback templates (unexpected error, auth error ...)
 //
 // FEATURES:
@@ -89,6 +90,12 @@ func prepareTest(files []testTemplate) (*Router, func()) {
 // - - default file extension
 // - - always skip resolvers
 // - how to integrate middleware? (authentication, authorization)
+
+// DOCUMENTATION:
+// - - template priority: index -> D_TEMPLATE -> HandlerMethod.template
+// - - layout priority: default -> D_LAYOUT -> HandlerMethod.layout
+// - HandlerMethod:
+// - - router.HandlerMethod is available for full control but should better not be used (use HX-Location)
 
 func TestRouter(t *testing.T) {
 	templates := []testTemplate{
@@ -279,6 +286,73 @@ func TestRouter_Put(t *testing.T) {
 	data := url.Values{}
 	data.Add("input1", "value1")
 	req := httptest.NewRequest("PUT", "/v1/val/path", strings.NewReader(data.Encode()))
+	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Add("Content-Length", strconv.Itoa(len(data.Encode())))
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+	resp := rec.Result()
+
+	assert.True(t, handlerCalled, "PUT handler wasn't called")
+	assert.Equal(t, resp.StatusCode, 202)
+	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, "val,resolvedValue", string(body))
+}
+
+func TestRouter_Patch(t *testing.T) {
+	templates := []testTemplate{
+		{"v1/{var1}/path/index.tmpl", "{{.path_variables.var1}},{{.var1}}"},
+	}
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
+	handlerCalled := false
+	router.UseResolver("var1",
+		Patch(func(w http.ResponseWriter, r *http.Request) (any, error) {
+			r.ParseForm()
+			w.WriteHeader(202)
+			assert.Equal(t, "value1", r.PostForm.Get("input1"))
+			handlerCalled = true
+			return "resolvedValue", nil
+		}),
+	)
+
+	data := url.Values{}
+	data.Add("input1", "value1")
+	req := httptest.NewRequest("PATCH", "/v1/val/path", strings.NewReader(data.Encode()))
+	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Add("Content-Length", strconv.Itoa(len(data.Encode())))
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+	resp := rec.Result()
+
+	assert.True(t, handlerCalled, "PATCH handler wasn't called")
+	assert.Equal(t, resp.StatusCode, 202)
+	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, "val,resolvedValue", string(body))
+}
+
+func TestRouter_Delete(t *testing.T) {
+	templates := []testTemplate{
+		{"v1/{var1}/path/index.tmpl", "{{.path_variables.var1}},{{.var1}}"},
+	}
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
+	handlerCalled := false
+	router.UseResolver("var1",
+		Delete(func(w http.ResponseWriter, r *http.Request) (any, error) {
+			r.ParseForm()
+			w.WriteHeader(202)
+			handlerCalled = true
+			return "resolvedValue", nil
+		}),
+	)
+
+	data := url.Values{}
+	data.Add("input1", "value1")
+	req := httptest.NewRequest("DELETE", "/v1/val/path", strings.NewReader(data.Encode()))
 	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Add("Content-Length", strconv.Itoa(len(data.Encode())))
 	rec := httptest.NewRecorder()
