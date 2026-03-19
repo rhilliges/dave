@@ -31,7 +31,7 @@ func (router *Router) UseResolver(varName string, configFunc ResolverConfFunc) {
 	configFunc(router, varName)
 }
 
-func Get[K any](handler func(r *http.Request, value string) (K, error)) ResolverConfFunc {
+func Get(handler func(r *http.Request, value string) (any, error)) ResolverConfFunc {
 	return func(router *Router, varName string) {
 		variableResolvers := router.resolvers[varName]
 		if variableResolvers == nil {
@@ -45,21 +45,25 @@ func Get[K any](handler func(r *http.Request, value string) (K, error)) Resolver
 	}
 }
 
-func Post[K any](handler func(w http.ResponseWriter, r *http.Request) (K, error)) ResolverConfFunc {
+func Post(handler ResolverFunc) ResolverConfFunc {
+	return MethodHandler(http.MethodPost, handler)
+}
+
+func Put(handler ResolverFunc) ResolverConfFunc {
+	return MethodHandler(http.MethodPut, handler)
+}
+
+func MethodHandler(m string, handler ResolverFunc) ResolverConfFunc {
 	return func(router *Router, varName string) {
 		variableResolvers := router.resolvers[varName]
 		if variableResolvers == nil {
 			router.resolvers[varName] = make(map[string]ResolverFunc)
 		}
-		router.resolvers[varName]["POST"] = func(w http.ResponseWriter, r *http.Request) (any, error) {
+		router.resolvers[varName][m] = func(w http.ResponseWriter, r *http.Request) (any, error) {
 			return handler(w, r)
 		}
 	}
 }
-
-// func Post(request, value string) (string, error func(r *http.Request, value string) (string, error)) ResolverConfFunc {
-// 	panic("unimplemented")
-// }
 
 func NewRouter(fs fs.FS) *Router {
 	return &Router{fs: fs, resolvers: make(map[string]map[string]ResolverFunc)}

@@ -60,6 +60,11 @@ func prepareTest(files []testTemplate) (*Router, func()) {
 // - - LAYOUT header - done
 // - - deep-link layout file
 // - - layout resolver (HX-Request header example)
+// - CRUD
+// - - POST - done
+// - - PUT - done
+// - - PATCH
+// - - DELETE
 // - SKIP_RESOLVER header (make configurable)
 // - SKIP_GLOBAL_VALUES header (make configurable)
 // - globals
@@ -70,17 +75,10 @@ func prepareTest(files []testTemplate) (*Router, func()) {
 // - - logging (return error if some rendering failed)
 // - - validation error during POST/PATCH/PUT
 // - - fallback templates (unexpected error, auth error ...)
-// - CRUD
-// - - POST - done
-// - - PATCH
-// - - PUT
-// - - DELETE
-// - - SSE
-// - - "UsePoster/UsePatcher/UseUpdater" (different name ?)
-// - - validation? (needed?)
 //
 // FEATURES:
 // - cache data to render template for quick browser refreshes
+// - register path resolvers using reflection on the package path vs. a path variable
 //
 // EDGE CASES:
 // - user writes to ResponseWriter -> panic and tell the user why not to do that
@@ -209,7 +207,7 @@ func TestRouter_GetResolver(t *testing.T) {
 
 	router.UseResolver(
 		"var1",
-		Get(func(r *http.Request, value string) (string, error) {
+		Get(func(r *http.Request, value string) (any, error) {
 			pathVariables := r.Context().Value(pathVariablesKey).(PathVariables)
 			resolverCalled = true
 			assert.Equal(t, "value1", value)
@@ -236,7 +234,7 @@ func TestRouter_Post(t *testing.T) {
 
 	handlerCalled := false
 	router.UseResolver("var1",
-		Post(func(w http.ResponseWriter, r *http.Request) (string, error) {
+		Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
 			r.ParseForm()
 			w.WriteHeader(202)
 			assert.Equal(t, "value1", r.PostForm.Get("input1"))
@@ -255,6 +253,40 @@ func TestRouter_Post(t *testing.T) {
 	resp := rec.Result()
 
 	assert.True(t, handlerCalled, "POST handler wasn't called")
+	assert.Equal(t, resp.StatusCode, 202)
+	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, "val,resolvedValue", string(body))
+}
+
+func TestRouter_Put(t *testing.T) {
+	templates := []testTemplate{
+		{"v1/{var1}/path/index.tmpl", "{{.path_variables.var1}},{{.var1}}"},
+	}
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
+	handlerCalled := false
+	router.UseResolver("var1",
+		Put(func(w http.ResponseWriter, r *http.Request) (any, error) {
+			r.ParseForm()
+			w.WriteHeader(202)
+			assert.Equal(t, "value1", r.PostForm.Get("input1"))
+			handlerCalled = true
+			return "resolvedValue", nil
+		}),
+	)
+
+	data := url.Values{}
+	data.Add("input1", "value1")
+	req := httptest.NewRequest("PUT", "/v1/val/path", strings.NewReader(data.Encode()))
+	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Add("Content-Length", strconv.Itoa(len(data.Encode())))
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+	resp := rec.Result()
+
+	assert.True(t, handlerCalled, "PUT handler wasn't called")
 	assert.Equal(t, resp.StatusCode, 202)
 	body, _ := io.ReadAll(resp.Body)
 	assert.Equal(t, "val,resolvedValue", string(body))
