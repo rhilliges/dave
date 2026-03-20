@@ -69,6 +69,7 @@ func prepareTest(files []testTemplate) (*Router, func()) {
 // - SKIP_GLOBAL_VALUES header (make configurable)
 // - globals
 // - - global available values - done
+// - - global template functions - done
 // - error handling
 // - - logging (log unexpected errors if some rendering failed)
 // - - validation error during POST/PATCH/PUT - done (use HX-Location header)
@@ -102,9 +103,8 @@ func prepareTest(files []testTemplate) (*Router, func()) {
 // - - router.HandlerMethod is available for full control but should better not be used (use HX-Location)
 
 // What to do next:
-// - global template functions (resolvers?)
 // - content response headers (html, text, json)
-// - logging (log unexpected errors if some rendering failed)
+// - logging (log unexpected errors if some rendering failed) -> add/remove "DAVE" context variable
 // - custom fallback templates (auth error)
 // - layout resolvers (HX-Request header example, D_LAYOUT default implementation)
 // - figure out middlewares
@@ -223,7 +223,7 @@ func TestRouter_UseGlobals(t *testing.T) {
 	req := httptest.NewRequest("GET", "/v1", nil)
 	rec := httptest.NewRecorder()
 
-	router.UseGlobals(
+	router.Use(
 		Global("global1", func() any {
 			return "value1"
 		}),
@@ -237,6 +237,33 @@ func TestRouter_UseGlobals(t *testing.T) {
 	resp := rec.Result()
 	body, _ := io.ReadAll(resp.Body)
 	assert.Equal(t, "value1,value2", string(body))
+}
+
+func TestRouter_UseGlobalFunctions(t *testing.T) {
+	templates := []testTemplate{
+		{"v1/{var1}/index.tmpl", "{{.path_variables.var1 | to_upper}}"},
+	}
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
+	router.Use(
+		Func("to_upper", func(values ...string) string {
+			result := ""
+			for _, v := range values {
+				result += strings.ToUpper(v)
+			}
+			return result
+		}),
+	)
+
+	req := httptest.NewRequest("GET", "/v1/val", nil)
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	resp := rec.Result()
+	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, "VAL", string(body))
 }
 
 func TestRouter_Get(t *testing.T) {

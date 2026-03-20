@@ -16,6 +16,7 @@ type (
 	ResolverConfFunc func(router *Router, varName string)
 	ResolverFunc     func(w http.ResponseWriter, r *http.Request) (any, error)
 	GlobalConfFunc   func(router *Router)
+	PathVariables    map[string]string
 )
 
 type Router struct {
@@ -23,13 +24,12 @@ type Router struct {
 	resolvers map[string]map[string]ResolverFunc
 	globals   map[string]func() any
 	templates *template.Template
+	funcs     map[string]any
 }
-
-type PathVariables map[string]string
 
 var PathVariablesKey = &PathVariables{}
 
-func (router *Router) UseGlobals(configFunc ...GlobalConfFunc) {
+func (router *Router) Use(configFunc ...GlobalConfFunc) {
 	for _, f := range configFunc {
 		f(router)
 	}
@@ -38,6 +38,12 @@ func (router *Router) UseGlobals(configFunc ...GlobalConfFunc) {
 func (router *Router) UseResolver(varName string, configFunc ...ResolverConfFunc) {
 	for _, f := range configFunc {
 		f(router, varName)
+	}
+}
+
+func Func(s string, f any) GlobalConfFunc {
+	return func(router *Router) {
+		router.funcs[s] = f
 	}
 }
 
@@ -84,6 +90,7 @@ func NewRouter(fs fs.FS) *Router {
 		fs:        fs,
 		resolvers: make(map[string]map[string]ResolverFunc),
 		globals:   make(map[string]func() any),
+		funcs:     make(map[string]any),
 	}
 }
 
@@ -94,7 +101,10 @@ type Render struct {
 }
 
 func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	router.templates = scanTemplates(router.fs)
+	rootTemplate := template.New("root")
+	rootTemplate.Funcs(router.funcs)
+	scanTemplates(rootTemplate, router.fs)
+	router.templates = rootTemplate
 
 	render, err := router.getRender(w, r)
 
@@ -128,8 +138,7 @@ func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	err = router.templates.ExecuteTemplate(w, render.layout, map[string]string{"content": content.String()})
 }
 
-func scanTemplates(root fs.FS) *template.Template {
-	rootTemplate := template.New("root")
+func scanTemplates(rootTemplate *template.Template, root fs.FS) {
 	fs.WalkDir(root, ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			log.Panic(err)
@@ -156,7 +165,6 @@ func scanTemplates(root fs.FS) *template.Template {
 		}
 		return nil
 	})
-	return rootTemplate
 }
 
 func (router *Router) getRender(w http.ResponseWriter, r *http.Request) (*Render, error) {
