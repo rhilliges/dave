@@ -16,6 +16,65 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+// TODO:
+// - file based routing - done
+// - path variables - done
+// - resolvers - done
+// - CRUD - done
+// - - POST - done
+// - - PUT - done
+// - - PATCH - done
+// - - DELETE - done
+// - components (nested templates) - done
+// - TEMPLATE_NAME header - done
+// - layouts
+// - - default layout - done
+// - - LAYOUT header - done
+// - - layout resolvers (HX-Request header example, D_LAYOUT default implementation)
+// - SKIP_RESOLVER header (make configurable)
+// - SKIP_GLOBAL_VALUES header (make configurable)
+// - globals
+// - - global available values - done
+// - - global template functions - done
+// - error handling
+// - - logging (log unexpected errors if some rendering failed)
+// - - validation error during POST/PATCH/PUT - done (use HX-Location header)
+// - - redirect error - done (use HX-Location header)
+// - - fallback templates (unexpected error, not found) - done
+// - content response headers (html, text) - done
+// - custom renderer
+//
+// FEATURES:
+// - cache data to render template for quick browser refreshes
+// - register path resolvers using reflection on the package path vs. a path variable
+//
+// EDGE CASES:
+// - user writes to ResponseWriter -> panic and tell the user why not to do that
+// - parse path variables before calling resolvers
+// - make header case insensitive (double check if needed)
+// - make configurable
+// - - default layout
+// - - default file extension
+// - - always skip resolvers
+// - how to integrate middleware? (authentication, authorization)
+
+// DOCUMENTATION:
+// - requets lifecycle
+// - - template priority: index -> D_TEMPLATE -> HandlerMethod.template
+// - - layout priority: default -> layout resolvers -> HandlerMethod.layout
+// - only write error response codes, otherwise could hide error response codes from previous handlers
+// - globals
+// - - i18n example implementation for values and functions
+// - available headers
+// - HandlerMethod:
+// - - router.HandlerMethod is available for full control but should better not be used (use HX-Location)
+
+// What to do next:
+// - logging (log unexpected errors if some rendering failed) -> add/remove "DAVE" context variable
+// - custom fallback templates (auth error)
+// - layout resolvers (HX-Request header example, D_LAYOUT default implementation)
+// - figure out middlewares
+
 type testTemplate struct {
 	location string
 	contents string
@@ -49,65 +108,6 @@ func prepareTest(files []testTemplate) (*Router, func()) {
 		os.RemoveAll(dir)
 	}
 }
-
-// TODO:
-// - file based routing - done
-// - path variables - done
-// - resolvers - done
-// - CRUD - done
-// - - POST - done
-// - - PUT - done
-// - - PATCH - done
-// - - DELETE - done
-// - components (nested templates) - done
-// - TEMPLATE_NAME header - done
-// - layouts
-// - - default layout - done
-// - - LAYOUT header - done
-// - - layout resolvers (HX-Request header example, D_LAYOUT default implementation)
-// - SKIP_RESOLVER header (make configurable)
-// - SKIP_GLOBAL_VALUES header (make configurable)
-// - globals
-// - - global available values - done
-// - - global template functions - done
-// - error handling
-// - - logging (log unexpected errors if some rendering failed)
-// - - validation error during POST/PATCH/PUT - done (use HX-Location header)
-// - - redirect error - done (use HX-Location header)
-// - - fallback templates (unexpected error, not found) - done
-// - custom renderer
-//
-// FEATURES:
-// - cache data to render template for quick browser refreshes
-// - register path resolvers using reflection on the package path vs. a path variable
-//
-// EDGE CASES:
-// - user writes to ResponseWriter -> panic and tell the user why not to do that
-// - parse path variables before calling resolvers
-// - make header case insensitive (double check if needed)
-// - make configurable
-// - - default layout
-// - - default file extension
-// - - always skip resolvers
-// - how to integrate middleware? (authentication, authorization)
-
-// DOCUMENTATION:
-// - requets lifecycle
-// - - template priority: index -> D_TEMPLATE -> HandlerMethod.template
-// - - layout priority: default -> layout resolvers -> HandlerMethod.layout
-// - only write error response codes, otherwise could hide error response codes from previous handlers
-// - globals
-// - - i18n example implementation for values and functions
-// - available headers
-// - HandlerMethod:
-// - - router.HandlerMethod is available for full control but should better not be used (use HX-Location)
-
-// What to do next:
-// - content response headers (html, text, json)
-// - logging (log unexpected errors if some rendering failed) -> add/remove "DAVE" context variable
-// - custom fallback templates (auth error)
-// - layout resolvers (HX-Request header example, D_LAYOUT default implementation)
-// - figure out middlewares
 
 func TestRouter(t *testing.T) {
 	templates := []testTemplate{
@@ -511,6 +511,7 @@ func TestRouter_UnexpectedError(t *testing.T) {
 
 	resp := rec.Result()
 	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, "text/plain; charset=utf-8", resp.Header.Get("Content-Type"))
 	assert.Equal(t, "unexpected error: some unexpected error resolving var1=value1", string(body))
 }
 
@@ -563,6 +564,7 @@ func TestRouter_ResourceNotFoundErrorFallback(t *testing.T) {
 
 	resp := rec.Result()
 	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, "text/html; charset=utf-8", resp.Header.Get("Content-Type"))
 	assert.Equal(t, resp.StatusCode, http.StatusOK, "expected status OK because resolver didn't set response code")
 	assert.Equal(t, "404, not found: no entity found for value1", string(body))
 }

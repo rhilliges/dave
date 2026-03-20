@@ -120,8 +120,10 @@ func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			t := router.templates.Lookup(daveError.fallback)
 			if t != nil {
 				render.data["error"] = daveError.cause
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
 				router.templates.ExecuteTemplate(w, daveError.fallback, render.data)
 			} else {
+				w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 				w.Write([]byte(fmt.Sprintf("%s: %s", daveError.message, daveError.cause)))
 			}
 		}
