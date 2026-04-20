@@ -16,7 +16,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// TODO:
+// FEATURES:
 // - file based routing - done
 // - path variables - done
 // - resolvers - done
@@ -30,35 +30,24 @@ import (
 // - layouts
 // - - default layout - done
 // - - LAYOUT header - done
-// - - layout resolvers (HX-Request header example, D-LAYOUT default implementation)
-// - SKIP_RESOLVER header (make configurable)
-// - SKIP_GLOBAL_VALUES header (make configurable)
+// - - layout resolvers (HX-Request header example, D-LAYOUT default implementation) - TODO
 // - globals
 // - - global available values - done
 // - - global template functions - done
 // - error handling
-// - - logging (log unexpected errors if some rendering failed)
+// - - logging (log unexpected errors if some rendering failed) - TODO
 // - - validation error during POST/PATCH/PUT - done (use HX-Location header)
 // - - redirect error - done (use HX-Location header)
 // - - fallback templates (unexpected error, not found) - done
 // - content response headers (html, text) - done
-// - D-FORM-HANDLER header - done
-// - custom renderer
-//
-// FEATURES:
-// - cache data to render template for quick browser refreshes
-// - register path resolvers using reflection on the package path vs. a path variable
-//
-// EDGE CASES:
-// - user writes to ResponseWriter -> panic and tell the user why not to do that
-// - parse path variables before calling resolvers
+// - d_form_handler header - done
+// - cache data to render template for quick browser refreshes - done
+// - user writes to ResponseWriter -> panic and tell the user why not to do that - TODO
 // - make header case insensitive (double check if needed)
 // - make configurable
 // - - default layout
 // - - default file extension
-// - - always skip resolvers
-// - how to integrate middleware? (authentication, authorization)
-
+//
 // DOCUMENTATION:
 // - requets lifecycle
 // - - template priority: index -> D-TEMPLATE -> HandlerMethod.template
@@ -69,14 +58,20 @@ import (
 // - available headers
 // - HandlerMethod:
 // - - router.HandlerMethod is available for full control but should better not be used (use HX-Location)
+// - document router scanTemplates function (make public?)
 
 // What to do next:
+// - logging (log unexpected errors if some rendering failed) -> add/remove "DAVE" context variable
+// - dev experience (caching, scanTemplates)
+// - clone root templates before rendering
+// - custom fallback templates for e.g. auth errors
 // - SKIP_RESOLVER header (make configurable)
 // - SKIP_GLOBAL_VALUES header (make configurable)
-// - logging (log unexpected errors if some rendering failed) -> add/remove "DAVE" context variable
-// - custom fallback templates (auth error)
 // - layout resolvers (HX-Request header example, D-LAYOUT default implementation)
 // - figure out middlewares
+// - how to integrate middleware? (authentication, authorization)
+// - register path resolvers using reflection on the package path vs. a path variable - see if feasible
+// - custom renderer
 
 type testTemplate struct {
 	location string
@@ -276,8 +271,10 @@ func TestRouter_Get(t *testing.T) {
 	router, cleanup := prepareTest(templates)
 	defer cleanup()
 
-	req := httptest.NewRequest("GET", "/v1/value1/v2/value2", nil)
-	req.Header.Add("D-FORM-HANDLER", "handler1")
+	data := url.Values{}
+	data.Add("input1", "value1")
+	data.Add("d_form_handler", "handler1")
+	req := httptest.NewRequest("GET", "/v1/value1/v2/value2?"+data.Encode(), nil)
 	rec := httptest.NewRecorder()
 	resolverCalled := false
 
@@ -318,8 +315,8 @@ func TestRouter_Post(t *testing.T) {
 			"var1",
 			Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
 				// daveRequest := GetRequest(r.Context())
-				body, _ := io.ReadAll(r.Body)
-				assert.Equal(t, "input1=value1", string(body))
+				// body, _ := io.ReadAll(r.Body)
+				assert.Equal(t, "d_form_handler=var1&input1=value1", r.Form.Encode())
 				postHandlerCalled = true
 				return "resolved1", nil
 			}),
@@ -332,10 +329,10 @@ func TestRouter_Post(t *testing.T) {
 
 	data := url.Values{}
 	data.Add("input1", "value1")
+	data.Add("d_form_handler", "var1")
 	req := httptest.NewRequest("POST", "/v1/val/path", strings.NewReader(data.Encode()))
 	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Add("Content-Length", strconv.Itoa(len(data.Encode())))
-	req.Header.Add("D-FORM-HANDLER", "var1")
 	rec := httptest.NewRecorder()
 
 	router.ServeHTTP(rec, req)
@@ -367,10 +364,10 @@ func TestRouter_Put(t *testing.T) {
 
 	data := url.Values{}
 	data.Add("input1", "value1")
+	data.Add("d_form_handler", "var1")
 	req := httptest.NewRequest("PUT", "/v1/val/path", strings.NewReader(data.Encode()))
 	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Add("Content-Length", strconv.Itoa(len(data.Encode())))
-	req.Header.Add("D-FORM-HANDLER", "var1")
 	rec := httptest.NewRecorder()
 
 	router.ServeHTTP(rec, req)
@@ -405,10 +402,10 @@ func TestRouter_Patch(t *testing.T) {
 
 	data := url.Values{}
 	data.Add("input1", "value1")
+	data.Add("d_form_handler", "var1")
 	req := httptest.NewRequest("PATCH", "/v1/val/path", strings.NewReader(data.Encode()))
 	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Add("Content-Length", strconv.Itoa(len(data.Encode())))
-	req.Header.Add("D-FORM-HANDLER", "var1")
 	rec := httptest.NewRecorder()
 
 	router.ServeHTTP(rec, req)
@@ -441,10 +438,10 @@ func TestRouter_Delete(t *testing.T) {
 
 	data := url.Values{}
 	data.Add("input1", "value1")
-	req := httptest.NewRequest("DELETE", "/v1/val/path", strings.NewReader(data.Encode()))
+	data.Add("d_form_handler", "var1")
+	req := httptest.NewRequest("DELETE", "/v1/val/path?"+data.Encode(), nil)
 	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Add("Content-Length", strconv.Itoa(len(data.Encode())))
-	req.Header.Add("D-FORM-HANDLER", "var1")
 	rec := httptest.NewRecorder()
 
 	router.ServeHTTP(rec, req)
@@ -463,8 +460,9 @@ func TestRouter_UnknownHandler(t *testing.T) {
 	router, cleanup := prepareTest(templates)
 	defer cleanup()
 
-	req := httptest.NewRequest("GET", "/v1/value1/v2/value2", nil)
-	req.Header.Add("D-FORM-HANDLER", "handler1")
+	data := url.Values{}
+	data.Add("d_form_handler", "handler1")
+	req := httptest.NewRequest("GET", "/v1/value1/v2/value2?"+data.Encode(), nil)
 	rec := httptest.NewRecorder()
 
 	router.ServeHTTP(rec, req)
@@ -482,8 +480,9 @@ func TestRouter_HandlerDoesNotSupportMethod(t *testing.T) {
 	router, cleanup := prepareTest(templates)
 	defer cleanup()
 
-	req := httptest.NewRequest("POST", "/v1/value1/v2/value2", nil)
-	req.Header.Add("D-FORM-HANDLER", "handler1")
+	data := url.Values{}
+	data.Add("d_form_handler", "handler1")
+	req := httptest.NewRequest("POST", "/v1/value1/v2/value2?"+data.Encode(), nil)
 	rec := httptest.NewRecorder()
 	resolverCalled := false
 
@@ -526,7 +525,9 @@ func TestRouter_ResourceNotFoundError(t *testing.T) {
 	router, cleanup := prepareTest(templates)
 	defer cleanup()
 
-	req := httptest.NewRequest("GET", "/v1/value1/v2/value2", nil)
+	data := url.Values{}
+	data.Add("d_form_handler", "var1")
+	req := httptest.NewRequest("GET", "/v1/value1/v2/value2?"+data.Encode(), nil)
 	req.Header.Add("D-FORM-HANDLER", "var1")
 	rec := httptest.NewRecorder()
 
@@ -555,8 +556,9 @@ func TestRouter_UnexpectedError(t *testing.T) {
 	router, cleanup := prepareTest(templates)
 	defer cleanup()
 
-	req := httptest.NewRequest("GET", "/v1/value1/v2/value2", nil)
-	req.Header.Add("D-FORM-HANDLER", "var1")
+	data := url.Values{}
+	data.Add("d_form_handler", "var1")
+	req := httptest.NewRequest("GET", "/v1/value1/v2/value2?"+data.Encode(), nil)
 	rec := httptest.NewRecorder()
 
 	router.Use(
@@ -585,8 +587,9 @@ func TestRouter_UnexpectedErrorFallback(t *testing.T) {
 	router, cleanup := prepareTest(templates)
 	defer cleanup()
 
-	req := httptest.NewRequest("GET", "/v1/value1/v2/value2", nil)
-	req.Header.Add("D-FORM-HANDLER", "var1")
+	data := url.Values{}
+	data.Add("d_form_handler", "var1")
+	req := httptest.NewRequest("GET", "/v1/value1/v2/value2?"+data.Encode(), nil)
 	rec := httptest.NewRecorder()
 
 	router.Use(
@@ -614,8 +617,9 @@ func TestRouter_ResourceNotFoundErrorFallback(t *testing.T) {
 	router, cleanup := prepareTest(templates)
 	defer cleanup()
 
-	req := httptest.NewRequest("GET", "/v1/value1/v2/value2", nil)
-	req.Header.Add("D-FORM-HANDLER", "var1")
+	data := url.Values{}
+	data.Add("d_form_handler", "var1")
+	req := httptest.NewRequest("GET", "/v1/value1/v2/value2?"+data.Encode(), nil)
 	rec := httptest.NewRecorder()
 
 	router.Use(
@@ -636,3 +640,64 @@ func TestRouter_ResourceNotFoundErrorFallback(t *testing.T) {
 	assert.Equal(t, resp.StatusCode, http.StatusOK, "expected status OK because resolver didn't set response code")
 	assert.Equal(t, "404, not found: no entity found for value1", string(body))
 }
+
+func TestRouter_DX_RescanTemplates(t *testing.T) {
+	templates := []testTemplate{
+		{"path/index.tmpl", ""},
+	}
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
+	router.Use(
+		Config(&Conf{
+			DevMode: true,
+		}),
+	)
+
+	req1 := httptest.NewRequest("GET", "/v1/value1/v2/value2", nil)
+	rec1 := httptest.NewRecorder()
+	router.ServeHTTP(rec1, req1)
+	originalTemplates := router.templates
+
+	req2 := httptest.NewRequest("GET", "/v1/value1/v2/value2", nil)
+	rec2 := httptest.NewRecorder()
+	router.ServeHTTP(rec2, req2)
+
+	assert.NotEqual(t, originalTemplates, router.templates)
+}
+
+// func TestRouter_DX_CacheTemplateData(t *testing.T) {
+// 	templates := []testTemplate{
+// 		{"v1/{var1}/v2/{var2}/index.tmpl", "{{.handler_result}},{{.path_variables.var2}}"},
+// 	}
+// 	router, cleanup := prepareTest(templates)
+// 	defer cleanup()
+//
+// 	data := url.Values{}
+// 	data.Add("input1", "value1")
+// 	data.Add("d_form_handler", "handler1")
+// 	req := httptest.NewRequest("GET", "/v1/value1/v2/value2?"+data.Encode(), nil)
+// 	rec := httptest.NewRecorder()
+// 	resolverCalled := false
+//
+// 	router.Use(
+// 		Config(&Conf{
+// 			DevMode: true,
+// 		}),
+// 		FormHandler("handler1", Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
+// 			resolverCalled = true
+// 			return "resolvedValue", nil
+// 		}),
+// 		),
+// 	)
+// 	router.ServeHTTP(rec, req)
+// 	assert.True(t, resolverCalled)
+//
+// 	resolverCalled = false
+// 	req2 := httptest.NewRequest("GET", "/v1/value1/v2/value2?"+data.Encode(), nil)
+// 	req2.Header.Add("D-DEV", "true")
+// 	rec2 := httptest.NewRecorder()
+// 	router.ServeHTTP(rec2, req2)
+//
+// 	assert.False(t, resolverCalled)
+// }

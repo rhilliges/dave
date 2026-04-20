@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 )
 
 type (
@@ -24,9 +25,11 @@ type Router struct {
 	globals      map[string]func() any
 	templates    *template.Template
 	funcs        map[string]any
+	config       *Conf
+	lastRender   *Render
 }
 
-type Request struct {
+type Render struct {
 	template       string
 	pathVariables  map[string]string
 	globals        map[string]any
@@ -34,23 +37,23 @@ type Request struct {
 	layout         string
 }
 
-func (r *Request) Template() string {
+func (r *Render) Template() string {
 	return r.template
 }
 
-func (r *Request) PathVariables() map[string]string {
+func (r *Render) PathVariables() map[string]string {
 	return r.pathVariables
 }
 
-func (r *Request) Layout() string {
+func (r *Render) Layout() string {
 	return r.layout
 }
 
-func (r *Request) ResolvedValues() map[string]any {
+func (r *Render) ResolvedValues() map[string]any {
 	return r.resolvedValues
 }
 
-func (r *Request) Globals() map[string]any {
+func (r *Render) Globals() map[string]any {
 	return r.globals
 }
 
@@ -60,6 +63,16 @@ func (router *Router) Use(configFunc ...ConfFunc) {
 	for _, f := range configFunc {
 		f(router)
 	}
+}
+
+func Config(c *Conf) ConfFunc {
+	return func(router *Router) {
+		router.config = c
+	}
+}
+
+type Conf struct {
+	DevMode bool
 }
 
 func Func(s string, f any) ConfFunc {
@@ -120,53 +133,67 @@ func NewRouter(fs fs.FS) *Router {
 		formHandlers: make(map[string]map[string]FormHandlerFunc),
 		globals:      make(map[string]func() any),
 		funcs:        make(map[string]any),
+		config:       &Conf{},
 	}
 }
 
-type Render struct {
-	layout   string
-	template string
-	data     map[string]any
-}
-
 func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	rootTemplate := template.New("root")
-	rootTemplate.Funcs(router.funcs)
-	scanTemplates(rootTemplate, router.fs)
-	router.templates = rootTemplate
-
+	if router.templates == nil || router.config.DevMode {
+		router.scanTemplates()
+	}
 	render, err := router.getRender(w, r)
+	// var render *Render
+	// var err error
+	// if router.config.DevMode && r.Header.Get("D-DEV") == "true" {
+	// 	render = router.lastRender
+	// } else {
+	// 	router.lastRender = render
+	// }
+	rootTemplate, _ := router.templates.Clone()
 	data := make(map[string]any)
 	if err != nil {
 		daveError := &daveError{}
 		if errors.As(err, daveError) {
-			t := router.templates.Lookup(daveError.fallback)
+			t := rootTemplate.Lookup(daveError.fallback)
 			if t != nil {
 				data["error"] = daveError.cause
 				w.Header().Set("Content-Type", "text/html; charset=utf-8")
-				router.templates.ExecuteTemplate(w, daveError.fallback, data)
+				rootTemplate.ExecuteTemplate(w, daveError.fallback, data)
 			} else {
 				w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 				w.Write([]byte(fmt.Sprintf("%s: %s", daveError.message, daveError.cause)))
 			}
 		}
-		// lookup custom fallback
 		return
 	}
 	data = render.resolvedValues
 	data["globals"] = render.globals
 	data["path_variables"] = render.pathVariables
-	log.Println(render)
 	if render.layout == "" {
-		err = router.templates.ExecuteTemplate(w, render.template, data)
+		err = rootTemplate.ExecuteTemplate(w, render.template, data)
 		return
 	}
 	content := &strings.Builder{}
-	err = router.templates.ExecuteTemplate(content, render.template, data)
-	err = router.templates.ExecuteTemplate(w, render.layout, map[string]string{"content": content.String()})
+	err = rootTemplate.ExecuteTemplate(content, render.template, data)
+	if err != nil {
+		handleTemplateError(w, err)
+		return
+	}
+	err = rootTemplate.ExecuteTemplate(w, render.layout, map[string]string{"content": content.String()})
+	if err != nil {
+		handleTemplateError(w, err)
+		return
+	}
 }
 
-func scanTemplates(rootTemplate *template.Template, root fs.FS) {
+func handleTemplateError(w http.ResponseWriter, err error) {
+	w.Write([]byte("error executing template: "))
+}
+
+func (router *Router) scanTemplates() {
+	rootTemplate := template.New(time.Now().String())
+	rootTemplate.Funcs(router.funcs)
+	root := router.fs
 	fs.WalkDir(root, ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			log.Panic(err)
@@ -193,9 +220,10 @@ func scanTemplates(rootTemplate *template.Template, root fs.FS) {
 		}
 		return nil
 	})
+	router.templates = rootTemplate
 }
 
-func (router *Router) getRender(w http.ResponseWriter, r *http.Request) (*Request, error) {
+func (router *Router) getRender(w http.ResponseWriter, r *http.Request) (*Render, error) {
 	globals := make(map[string]any)
 	resolvedValues := make(map[string]any)
 	pathVariables := make(map[string]string)
@@ -227,7 +255,7 @@ func (router *Router) getRender(w http.ResponseWriter, r *http.Request) (*Reques
 
 	if template == "" {
 		w.WriteHeader(http.StatusNotFound)
-		return &Request{
+		return &Render{
 				template,
 				pathVariables,
 				globals,
@@ -242,7 +270,8 @@ func (router *Router) getRender(w http.ResponseWriter, r *http.Request) (*Reques
 		keys = append(keys, k)
 	}
 
-	formHandlerKey := r.Header.Get("D-FORM-HANDLER")
+	r.ParseForm() // TODO error
+	formHandlerKey := r.FormValue("d_form_handler")
 	if formHandlerKey != "" {
 		handler := router.formHandlers[formHandlerKey]
 		if handler == nil {
@@ -257,7 +286,7 @@ func (router *Router) getRender(w http.ResponseWriter, r *http.Request) (*Reques
 		resolverCtx := context.WithValue(
 			r.Context(),
 			RequestContextKey,
-			Request{
+			Render{
 				template,
 				pathVariables,
 				globals,
@@ -273,7 +302,7 @@ func (router *Router) getRender(w http.ResponseWriter, r *http.Request) (*Reques
 		resolvedValues["handler_result"] = val
 	}
 
-	return &Request{
+	return &Render{
 		template,
 		pathVariables,
 		globals,
@@ -288,9 +317,9 @@ func parseRequestPath(templates *template.Template, path string) (string, map[st
 	pathVariables := make(map[string]string)
 
 	for _, v := range templates.Templates() {
-		if v.Name() == "root" {
-			continue
-		}
+		// if v.Name() == "root" {
+		// 	continue
+		// }
 		path := stripTemplateSuffix(v.Name())
 		pathSegments := strings.Split(path, "/")
 		if len(pathSegments) != len(reqSegments) {
@@ -327,12 +356,12 @@ func stripTemplateSuffix(t string) string {
 	return t[:i]
 }
 
-func GetRequest(context context.Context) Request {
-	return context.Value(RequestContextKey).(Request)
+func GetRequest(context context.Context) Render {
+	return context.Value(RequestContextKey).(Render)
 }
 
 func VariableValue(r *http.Request, varName string) any {
-	request := r.Context().Value(RequestContextKey).(Request)
+	request := r.Context().Value(RequestContextKey).(Render)
 	return request.pathVariables[varName]
 }
 
