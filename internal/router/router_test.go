@@ -61,17 +61,22 @@ import (
 // - document router scanTemplates function (make public?)
 
 // What to do next:
-// - logging (log unexpected errors if some rendering failed) -> add/remove "DAVE" context variable
+// - logging (log unexpected errors if some rendering failed) -> add/remove "DAVE" context variable - done
 // - dev experience (caching, scanTemplates)
 // - clone root templates before rendering
 // - custom fallback templates for e.g. auth errors
-// - SKIP_RESOLVER header (make configurable)
-// - SKIP_GLOBAL_VALUES header (make configurable)
 // - layout resolvers (HX-Request header example, D-LAYOUT default implementation)
 // - figure out middlewares
 // - how to integrate middleware? (authentication, authorization)
 // - register path resolvers using reflection on the package path vs. a path variable - see if feasible
 // - custom renderer
+
+// TODOs
+// Handle ParseForm() error	Low
+// Route conflict detection	Medium
+// Replace panics with error returns	Medium
+// Layout resolvers	For HX-Request header handling
+// Configurable defaults	Layout name, file extension
 
 type testTemplate struct {
 	location string
