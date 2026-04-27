@@ -44,6 +44,7 @@ import (
 // - cache data to render template for quick browser refreshes - done
 //
 // DOCUMENTATION:
+// - what is this project (easy to use w/ HTMX, great DX)
 // - request lifecycle
 // - template priority
 // - layout priority
@@ -54,6 +55,7 @@ import (
 // - reference for available headers
 // - how to use HX-Location for after creating an entity is successful
 // - document router scanTemplates function (startup vs first request vs dev mode behaviour)
+// - route conflict resolution
 
 // What to do next:
 // - logging (log unexpected errors if some rendering failed) -> add/remove "DAVE" context variable - done
@@ -68,15 +70,12 @@ import (
 
 // TODOs
 // Handle ParseForm() error	Low
-// Route conflict detection	Medium
 // Replace panics with error returns	Medium
-// Layout resolvers	For HX-Request header handling
-// Configurable defaults	Layout name, file extension
 // - make header case insensitive (double check if needed)
 // - make configurable
 // - - default layout
 // - - default file extension
-// - user writes to ResponseWriter -> panic and tell the user why not to do that - TODO
+// - user writes to ResponseWriter -> panic and tell the user why not to do that
 
 type testTemplate struct {
 	location string
@@ -811,6 +810,53 @@ func TestRouter_LayoutResolver_NonExistentLayoutFallsBackToNoLayout(t *testing.T
 	body, _ := io.ReadAll(resp.Body)
 
 	assert.Equal(t, "page-content", string(body))
+}
+
+func TestRouter_ExplicitPathTakesPrecedenceOverPathVariable(t *testing.T) {
+	templates := []testTemplate{
+		{"users/{id}/index.tmpl", "user-id:{{.path_variables.id}}"},
+		{"users/new/index.tmpl", "new-user-form"},
+		{"users/{id}/posts/{postId}/index.tmpl", "user:{{.path_variables.id}},post:{{.path_variables.postId}}"},
+		{"users/{id}/posts/latest/index.tmpl", "user:{{.path_variables.id}},latest-post"},
+	}
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+	testCases := []struct {
+		name           string
+		path           string
+		expectedRender string
+	}{
+		{
+			name:           "explicit 'new' should not be captured as path variable",
+			path:           "/users/new",
+			expectedRender: "new-user-form",
+		},
+		{
+			name:           "other values should still use path variable route",
+			path:           "/users/123",
+			expectedRender: "user-id:123",
+		},
+		{
+			name:           "nested explicit 'latest' should not be captured as path variable",
+			path:           "/users/456/posts/latest",
+			expectedRender: "user:456,latest-post",
+		},
+		{
+			name:           "nested other values should still use path variable route",
+			path:           "/users/456/posts/789",
+			expectedRender: "user:456,post:789",
+		},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", tc.path, nil)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			resp := rec.Result()
+			body, _ := io.ReadAll(resp.Body)
+			assert.Equal(t, tc.expectedRender, string(body))
+		})
+	}
 }
 
 func TestRouter_DX_RescanTemplates(t *testing.T) {

@@ -380,34 +380,35 @@ func parseRequestPath(templates *template.Template, path string) (string, map[st
 	reqSegments := strings.Split(path[1:], "/")
 	templatePath := ""
 	pathVariables := make(map[string]string)
+	bestSpecificity := -1
 
 	for _, v := range templates.Templates() {
-		// if v.Name() == "root" {
-		// 	continue
-		// }
 		path := stripTemplateSuffix(v.Name())
 		pathSegments := strings.Split(path, "/")
 		if len(pathSegments) != len(reqSegments) {
 			continue
 		}
 		found := true
+		specificity := 0
+		candidateVars := make(map[string]string)
 		for i, seg := range pathSegments {
 			if seg == reqSegments[i] {
+				specificity++
 				continue
 			} else {
 				if strings.HasPrefix(seg, "{") && strings.HasSuffix(seg, "}") {
 					varName := seg[1 : len(seg)-1]
-					pathVariables[varName] = reqSegments[i]
+					candidateVars[varName] = reqSegments[i]
 				} else {
 					found = false
 					break
 				}
 			}
 		}
-		if found {
+		if found && specificity > bestSpecificity {
+			bestSpecificity = specificity
 			templatePath = path
-		} else {
-			pathVariables = make(map[string]string)
+			pathVariables = candidateVars
 		}
 	}
 	return templatePath, pathVariables
