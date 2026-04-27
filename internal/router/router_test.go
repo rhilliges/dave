@@ -952,3 +952,77 @@ func TestRouter_DX_RescanTemplates(t *testing.T) {
 //
 // 	assert.False(t, resolverCalled)
 // }
+
+// Configurable defaults tests
+
+func TestRouter_ConfigurableDefaultLayout(t *testing.T) {
+	templates := []testTemplate{
+		{"layouts/main.tmpl", "main-layout:{{.content}}"},
+		{"layouts/default.tmpl", "default-layout:{{.content}}"},
+		{"path/to/index.tmpl", "page-content"},
+	}
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
+	router.Use(
+		Config(&Conf{
+			DefaultLayout: "main",
+		}),
+	)
+
+	req := httptest.NewRequest("GET", "/path/to", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	resp := rec.Result()
+	body, _ := io.ReadAll(resp.Body)
+
+	assert.Equal(t, "main-layout:page-content", string(body))
+}
+
+func TestRouter_ConfigurableTemplateExtension(t *testing.T) {
+	templates := []testTemplate{
+		{"path/to/index.html", "html-template"},
+	}
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
+	router.Use(
+		Config(&Conf{
+			TemplateExtension: ".html",
+		}),
+	)
+
+	req := httptest.NewRequest("GET", "/path/to", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	resp := rec.Result()
+	body, _ := io.ReadAll(resp.Body)
+
+	assert.Equal(t, "html-template", string(body))
+}
+
+func TestRouter_ConfigurableTemplateExtensionWithLayout(t *testing.T) {
+	templates := []testTemplate{
+		{"layouts/default.html", "layout:{{.content}}"},
+		{"path/to/index.html", "page-content"},
+	}
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
+	router.Use(
+		Config(&Conf{
+			TemplateExtension: ".html",
+		}),
+	)
+
+	req := httptest.NewRequest("GET", "/path/to", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	resp := rec.Result()
+	body, _ := io.ReadAll(resp.Body)
+
+	assert.Equal(t, "layout:page-content", string(body))
+}

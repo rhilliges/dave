@@ -89,7 +89,23 @@ func Config(c *Conf) ConfFunc {
 }
 
 type Conf struct {
-	DevMode bool
+	DevMode           bool
+	DefaultLayout     string
+	TemplateExtension string
+}
+
+func (c *Conf) getDefaultLayout() string {
+	if c.DefaultLayout == "" {
+		return "default"
+	}
+	return c.DefaultLayout
+}
+
+func (c *Conf) getTemplateExtension() string {
+	if c.TemplateExtension == "" {
+		return ".tmpl"
+	}
+	return c.TemplateExtension
 }
 
 func Func(s string, f any) ConfFunc {
@@ -233,6 +249,7 @@ func (router *Router) ScanTemplates() {
 	slog.Info("scanning templates")
 	rootTemplate := template.New(time.Now().String())
 	rootTemplate.Funcs(router.funcs)
+	ext := router.config.getTemplateExtension()
 	root := router.fs
 	fs.WalkDir(root, ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -246,8 +263,12 @@ func (router *Router) ScanTemplates() {
 			slog.Debug("found directory", "dir", path)
 			return nil
 		}
+		if !strings.HasSuffix(path, ext) {
+			slog.Debug("skipping non-template file", "file", path)
+			return nil
+		}
 		slog.Debug("parsing template", "template", path)
-		newTemplate := rootTemplate.New(stripTemplateSuffix(path))
+		newTemplate := rootTemplate.New(stripTemplateSuffix(path, ext))
 		file, err := root.Open(path)
 		if err != nil {
 			slog.Error("failed to open template file", "template", path, "error", err)
@@ -291,7 +312,7 @@ func (router *Router) getRender(w http.ResponseWriter, r *http.Request) (*Render
 			logger.Debug("layout resolver returned empty string; rendering w/o layout")
 		}
 	} else if layout == "" {
-		layout = "default"
+		layout = router.config.getDefaultLayout()
 	}
 
 	if layout != "" {
@@ -304,7 +325,7 @@ func (router *Router) getRender(w http.ResponseWriter, r *http.Request) (*Render
 	}
 
 	reqPath := strings.Join([]string{r.URL.Path, templateName}, "/")
-	template, pathVariables = parseRequestPath(router.templates, reqPath)
+	template, pathVariables = router.parseRequestPath(router.templates, reqPath)
 	logger.Debug("resolved template", "template", template, "path_variables", pathVariables)
 
 	for name, global := range router.globals {
@@ -377,14 +398,15 @@ func (router *Router) getRender(w http.ResponseWriter, r *http.Request) (*Render
 	}, nil
 }
 
-func parseRequestPath(templates *template.Template, path string) (string, map[string]string) {
+func (router *Router) parseRequestPath(templates *template.Template, path string) (string, map[string]string) {
 	reqSegments := strings.Split(path[1:], "/")
 	templatePath := ""
 	pathVariables := make(map[string]string)
 	bestSpecificity := -1
+	ext := router.config.getTemplateExtension()
 
 	for _, v := range templates.Templates() {
-		path := stripTemplateSuffix(v.Name())
+		path := stripTemplateSuffix(v.Name(), ext)
 		pathSegments := strings.Split(path, "/")
 		if len(pathSegments) != len(reqSegments) {
 			continue
@@ -415,8 +437,8 @@ func parseRequestPath(templates *template.Template, path string) (string, map[st
 	return templatePath, pathVariables
 }
 
-func stripTemplateSuffix(t string) string {
-	i := strings.LastIndex(t, ".tmpl")
+func stripTemplateSuffix(t string, ext string) string {
+	i := strings.LastIndex(t, ext)
 	if i < 0 {
 		return t
 	}
