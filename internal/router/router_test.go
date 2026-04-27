@@ -1,9 +1,11 @@
 package router
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -42,6 +44,8 @@ import (
 // - content response headers (html, text) - done
 // - d_form_handler header - done
 // - cache data to render template for quick browser refreshes - done
+// - logging (log unexpected errors if some rendering failed) -> add/remove "DAVE" context variable - done
+// - user writes to ResponseWriter -> log error - done
 //
 // DOCUMENTATION:
 // - what is this project (easy to use w/ HTMX, great DX)
@@ -56,9 +60,9 @@ import (
 // - how to use HX-Location for after creating an entity is successful
 // - document router scanTemplates function (startup vs first request vs dev mode behaviour)
 // - route conflict resolution
+// - user writes to ResponseWriter
 
 // What to do next:
-// - logging (log unexpected errors if some rendering failed) -> add/remove "DAVE" context variable - done
 // - dev experience (caching, scanTemplates)
 // - clone root templates before rendering
 // - custom fallback templates for e.g. auth errors
@@ -71,11 +75,9 @@ import (
 // TODOs
 // Handle ParseForm() error	Low
 // Replace panics with error returns	Medium
-// - make header case insensitive (double check if needed)
 // - make configurable
 // - - default layout
 // - - default file extension
-// - user writes to ResponseWriter -> panic and tell the user why not to do that
 
 type testTemplate struct {
 	location string
@@ -857,6 +859,37 @@ func TestRouter_ExplicitPathTakesPrecedenceOverPathVariable(t *testing.T) {
 			assert.Equal(t, tc.expectedRender, string(body))
 		})
 	}
+}
+
+func TestRouter_LogsErrorWhenHandlerWritesToResponseBody(t *testing.T) {
+	templates := []testTemplate{
+		{"path/to/index.tmpl", "template-content"},
+	}
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
+	var logBuffer bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuffer, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	slog.SetDefault(logger)
+
+	router.Use(
+		FormHandler("writeBody",
+			Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
+				w.Write([]byte("direct write"))
+				return "handler-result", nil
+			}),
+		),
+	)
+
+	data := url.Values{}
+	data.Add("d_form_handler", "writeBody")
+	req := httptest.NewRequest("GET", "/path/to?"+data.Encode(), nil)
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	logOutput := logBuffer.String()
+	assert.Contains(t, logOutput, "handler wrote to response body")
 }
 
 func TestRouter_DX_RescanTemplates(t *testing.T) {

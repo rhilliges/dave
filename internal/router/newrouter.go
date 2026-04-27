@@ -358,7 +358,8 @@ func (router *Router) getRender(w http.ResponseWriter, r *http.Request) (*Render
 				layout,
 			})
 		resolverReq := r.WithContext(resolverCtx)
-		val, err := handlerMethod(w, resolverReq)
+		guardedWriter := &guardedResponseWriter{ResponseWriter: w, logger: logger}
+		val, err := handlerMethod(guardedWriter, resolverReq)
 		if err != nil {
 			logger.Info("form handler returned error", "handler", formHandlerKey, "error", err)
 			return nil, err
@@ -455,4 +456,19 @@ func Unexpected(cause error) error {
 		fallback: "fallback/unexpected_error",
 		cause:    cause,
 	}
+}
+
+type guardedResponseWriter struct {
+	http.ResponseWriter
+	logger    *slog.Logger
+	bodyWrote bool
+}
+
+func (g *guardedResponseWriter) Write(b []byte) (int, error) {
+	if !g.bodyWrote {
+		g.logger.Error("handler wrote to response body", "bytes", len(b))
+		g.bodyWrote = true
+	}
+	// Ignore the write but return success to avoid errors in handler
+	return len(b), nil
 }
