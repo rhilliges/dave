@@ -92,6 +92,7 @@ type Conf struct {
 	DevMode           bool
 	DefaultLayout     string
 	TemplateExtension string
+	MaxFormSize       int64
 }
 
 func (c *Conf) getDefaultLayout() string {
@@ -106,6 +107,13 @@ func (c *Conf) getTemplateExtension() string {
 		return ".tmpl"
 	}
 	return c.TemplateExtension
+}
+
+func (c *Conf) getMaxFormSize() int64 {
+	if c.MaxFormSize == 0 {
+		return 32 << 20 // 32MB default
+	}
+	return c.MaxFormSize
 }
 
 func Func(s string, f any) ConfFunc {
@@ -365,8 +373,19 @@ func (router *Router) getRender(w http.ResponseWriter, r *http.Request) (*Render
 		keys = append(keys, k)
 	}
 
-	if err := r.ParseForm(); err != nil {
-		logger.Error("failed to parse form", "error", err)
+	contentType := r.Header.Get("Content-Type")
+	if strings.HasPrefix(contentType, "multipart/form-data") {
+		if err := r.ParseMultipartForm(router.config.getMaxFormSize()); err != nil {
+			logger.Error("failed to parse multipart form", "error", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return nil, Unexpected(fmt.Errorf("failed to parse multipart form: %w", err))
+		}
+	} else {
+		if err := r.ParseForm(); err != nil {
+			logger.Error("failed to parse form", "error", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return nil, Unexpected(fmt.Errorf("failed to parse form: %w", err))
+		}
 	}
 	formHandlerKey := r.FormValue("d_form_handler")
 	if formHandlerKey != "" {

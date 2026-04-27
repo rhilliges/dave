@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"log/slog"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -77,6 +78,7 @@ import (
 // - route conflict resolution
 // - user writes to ResponseWriter
 // - document all Conf options
+// - document form parsing behavior
 // - developer experience
 // - - what does dev mode do?
 // - - how to auto reload using air (don't recompile go code if only templates change)
@@ -90,9 +92,6 @@ import (
 // - how to integrate middleware? (authentication, authorization)
 // - register path resolvers using reflection on the package path vs. a path variable - see if feasible
 // - custom renderer
-
-// TODOs
-// Handle ParseForm() error	Low
 
 type testTemplate struct {
 	location string
@@ -1057,4 +1056,41 @@ func TestRouter_ScanTemplates_InvalidTemplate_ReturnsErrorInResponse(t *testing.
 
 	assert.Contains(t, string(body), "error")
 	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+}
+
+func TestRouter_MultipartForm_ConfigurableMaxFormSize(t *testing.T) {
+	templates := []testTemplate{
+		{"path/to/index.tmpl", "result:{{.handler_result}}"},
+	}
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
+	router.Use(
+		Config(&Conf{
+			MaxFormSize: 1 << 20, // 1MB
+		}),
+		FormHandler("myHandler",
+			Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
+				return r.FormValue("text_field"), nil
+			}),
+		),
+	)
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	writer.WriteField("d_form_handler", "myHandler")
+	writer.WriteField("text_field", "configured-size")
+	writer.Close()
+
+	req := httptest.NewRequest("POST", "/path/to", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	resp := rec.Result()
+	respBody, _ := io.ReadAll(resp.Body)
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "result:configured-size", string(respBody))
 }
