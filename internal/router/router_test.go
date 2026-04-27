@@ -180,42 +180,6 @@ func TestRouter_TemplateHeader(t *testing.T) {
 	assert.Equal(t, "create", string(body))
 }
 
-func TestRouter_DefaultLayout(t *testing.T) {
-	templates := []testTemplate{
-		{"layouts/default.tmpl", "layout-start {{if .content}} {{.content}} {{end}} layout-end"},
-		{"path/to/index.tmpl", "layout-content"},
-	}
-	router, cleanup := prepareTest(templates)
-	defer cleanup()
-
-	req := httptest.NewRequest("GET", "/path/to", nil)
-	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, req)
-	resp := rec.Result()
-
-	body, _ := io.ReadAll(resp.Body)
-	assert.Equal(t, "layout-start  layout-content  layout-end", string(body))
-}
-
-func TestRouter_LayoutHeader(t *testing.T) {
-	templates := []testTemplate{
-		{"layouts/custom.tmpl", "custom-layout-start {{if .content}} {{.content}} {{end}} custom-layout-end"},
-		{"path/to/index.tmpl", "layout-content"},
-	}
-	router, cleanup := prepareTest(templates)
-	defer cleanup()
-
-	req := httptest.NewRequest("GET", "/path/to", nil)
-	rec := httptest.NewRecorder()
-	req.Header.Add("D-LAYOUT", "custom")
-
-	router.ServeHTTP(rec, req)
-
-	resp := rec.Result()
-	body, _ := io.ReadAll(resp.Body)
-	assert.Equal(t, "custom-layout-start  layout-content  custom-layout-end", string(body))
-}
-
 func TestRouter_UseGlobals(t *testing.T) {
 	templates := []testTemplate{
 		{"v1/index.tmpl", "{{.globals.global1}},{{.globals.global2}}"},
@@ -644,6 +608,209 @@ func TestRouter_ResourceNotFoundErrorFallback(t *testing.T) {
 	assert.Equal(t, "text/html; charset=utf-8", resp.Header.Get("Content-Type"))
 	assert.Equal(t, resp.StatusCode, http.StatusOK, "expected status OK because resolver didn't set response code")
 	assert.Equal(t, "404, not found: no entity found for value1", string(body))
+}
+
+func TestRouter_DefaultLayout(t *testing.T) {
+	templates := []testTemplate{
+		{"layouts/default.tmpl", "layout-start {{if .content}} {{.content}} {{end}} layout-end"},
+		{"path/to/index.tmpl", "layout-content"},
+	}
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
+	req := httptest.NewRequest("GET", "/path/to", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	resp := rec.Result()
+
+	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, "layout-start  layout-content  layout-end", string(body))
+}
+
+func TestRouter_LayoutHeader(t *testing.T) {
+	templates := []testTemplate{
+		{"layouts/custom.tmpl", "custom-layout-start {{if .content}} {{.content}} {{end}} custom-layout-end"},
+		{"path/to/index.tmpl", "layout-content"},
+	}
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
+	req := httptest.NewRequest("GET", "/path/to", nil)
+	rec := httptest.NewRecorder()
+	req.Header.Add("D-LAYOUT", "custom")
+
+	router.ServeHTTP(rec, req)
+
+	resp := rec.Result()
+	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, "custom-layout-start  layout-content  custom-layout-end", string(body))
+}
+
+func TestRouter_LayoutResolver_ReturnsLayout(t *testing.T) {
+	templates := []testTemplate{
+		{"layouts/custom.tmpl", "custom-start {{.content}} custom-end"},
+		{"path/to/index.tmpl", "page-content"},
+	}
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
+	resolverCalled := false
+	router.Use(
+		LayoutResolver(func(r *http.Request) string {
+			resolverCalled = true
+			return "custom"
+		}),
+	)
+
+	req := httptest.NewRequest("GET", "/path/to", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	resp := rec.Result()
+	body, _ := io.ReadAll(resp.Body)
+
+	assert.True(t, resolverCalled, "layout resolver should have been called")
+	assert.Equal(t, "custom-start page-content custom-end", string(body))
+}
+
+func TestRouter_LayoutResolver_EmptyStringSkipsLayout(t *testing.T) {
+	templates := []testTemplate{
+		{"layouts/default.tmpl", "default-start {{.content}} default-end"},
+		{"path/to/index.tmpl", "page-content"},
+	}
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
+	router.Use(
+		LayoutResolver(func(r *http.Request) string {
+			return "" // empty string should skip layout
+		}),
+	)
+
+	req := httptest.NewRequest("GET", "/path/to", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	resp := rec.Result()
+	body, _ := io.ReadAll(resp.Body)
+
+	// Should render without any layout wrapping
+	assert.Equal(t, "page-content", string(body))
+}
+
+func TestRouter_LayoutResolver_HXRequestSkipsLayout(t *testing.T) {
+	templates := []testTemplate{
+		{"layouts/default.tmpl", "default-start {{.content}} default-end"},
+		{"path/to/index.tmpl", "partial-content"},
+	}
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
+	router.Use(
+		LayoutResolver(func(r *http.Request) string {
+			if r.Header.Get("HX-Request") == "true" {
+				return ""
+			}
+			return "default"
+		}),
+	)
+
+	req := httptest.NewRequest("GET", "/path/to", nil)
+	req.Header.Set("HX-Request", "true")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	resp := rec.Result()
+	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, "partial-content", string(body))
+
+	req2 := httptest.NewRequest("GET", "/path/to", nil)
+	rec2 := httptest.NewRecorder()
+	router.ServeHTTP(rec2, req2)
+
+	resp2 := rec2.Result()
+	body2, _ := io.ReadAll(resp2.Body)
+	assert.Equal(t, "default-start partial-content default-end", string(body2))
+}
+
+func TestRouter_LayoutResolver_DLayoutHeaderOverridesResolver(t *testing.T) {
+	templates := []testTemplate{
+		{"layouts/resolver-layout.tmpl", "resolver-start {{.content}} resolver-end"},
+		{"layouts/header-layout.tmpl", "header-start {{.content}} header-end"},
+		{"path/to/index.tmpl", "page-content"},
+	}
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
+	router.Use(
+		LayoutResolver(func(r *http.Request) string {
+			return "resolver-layout"
+		}),
+	)
+
+	req := httptest.NewRequest("GET", "/path/to", nil)
+	req.Header.Set("D-LAYOUT", "header-layout")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	resp := rec.Result()
+	body, _ := io.ReadAll(resp.Body)
+
+	assert.Equal(t, "header-start page-content header-end", string(body))
+}
+
+func TestRouter_LayoutResolver_ResolverReceivesRequest(t *testing.T) {
+	templates := []testTemplate{
+		{"layouts/default.tmpl", "{{.content}}"},
+		{"path/to/index.tmpl", "content"},
+	}
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
+	var capturedPath string
+	var capturedMethod string
+	var capturedHeader string
+
+	router.Use(
+		LayoutResolver(func(r *http.Request) string {
+			capturedPath = r.URL.Path
+			capturedMethod = r.Method
+			capturedHeader = r.Header.Get("X-Custom-Header")
+			return "default"
+		}),
+	)
+
+	req := httptest.NewRequest("POST", "/path/to", nil)
+	req.Header.Set("X-Custom-Header", "custom-value")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	assert.Equal(t, "/path/to", capturedPath)
+	assert.Equal(t, "POST", capturedMethod)
+	assert.Equal(t, "custom-value", capturedHeader)
+}
+
+func TestRouter_LayoutResolver_NonExistentLayoutFallsBackToNoLayout(t *testing.T) {
+	templates := []testTemplate{
+		{"path/to/index.tmpl", "page-content"},
+	}
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
+	router.Use(
+		LayoutResolver(func(r *http.Request) string {
+			return "non-existent-layout"
+		}),
+	)
+
+	req := httptest.NewRequest("GET", "/path/to", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	resp := rec.Result()
+	body, _ := io.ReadAll(resp.Body)
+
+	assert.Equal(t, "page-content", string(body))
 }
 
 func TestRouter_DX_RescanTemplates(t *testing.T) {

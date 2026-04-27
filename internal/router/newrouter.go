@@ -18,17 +18,19 @@ import (
 type (
 	FormHandlerConfFunc func(router *Router, varName string)
 	FormHandlerFunc     func(w http.ResponseWriter, r *http.Request) (any, error)
+	LayoutResolverFunc  func(r *http.Request) string
 	ConfFunc            func(router *Router)
 )
 
 type Router struct {
-	fs           fs.FS
-	formHandlers map[string]map[string]FormHandlerFunc
-	globals      map[string]func() any
-	templates    *template.Template
-	funcs        map[string]any
-	config       *Conf
-	lastRender   *Render
+	fs             fs.FS
+	formHandlers   map[string]map[string]FormHandlerFunc
+	globals        map[string]func() any
+	templates      *template.Template
+	funcs          map[string]any
+	config         *Conf
+	lastRender     *Render
+	layoutResolver LayoutResolverFunc
 }
 
 type Render struct {
@@ -99,6 +101,12 @@ func Func(s string, f any) ConfFunc {
 func Global(name string, globalFunc func() any) ConfFunc {
 	return func(router *Router) {
 		router.globals[name] = globalFunc
+	}
+}
+
+func LayoutResolver(resolver LayoutResolverFunc) ConfFunc {
+	return func(router *Router) {
+		router.layoutResolver = resolver
 	}
 }
 
@@ -277,14 +285,22 @@ func (router *Router) getRender(w http.ResponseWriter, r *http.Request) (*Render
 	}
 
 	layout = r.Header.Get("D-LAYOUT")
-	if layout == "" {
+	if layout == "" && router.layoutResolver != nil {
+		layout = router.layoutResolver(r)
+		if layout == "" {
+			logger.Debug("layout resolver returned empty string; rendering w/o layout")
+		}
+	} else if layout == "" {
 		layout = "default"
 	}
-	layout = strings.Join([]string{"layouts", layout}, "/")
-	layoutTemplate := router.templates.Lookup(layout)
-	if layoutTemplate == nil {
-		logger.Debug("layout not found; rendering w/o layout", "layout", layout)
-		layout = ""
+
+	if layout != "" {
+		layout = strings.Join([]string{"layouts", layout}, "/")
+		layoutTemplate := router.templates.Lookup(layout)
+		if layoutTemplate == nil {
+			logger.Debug("layout not found; rendering w/o layout", "layout", layout)
+			layout = ""
+		}
 	}
 
 	reqPath := strings.Join([]string{r.URL.Path, templateName}, "/")
