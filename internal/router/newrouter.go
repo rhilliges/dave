@@ -169,7 +169,7 @@ func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	r = r.WithContext(contextWithLogger(r.Context(), requestLogger))
 
 	if router.templates == nil || router.config.DevMode {
-		router.scanTemplates()
+		router.ScanTemplates()
 	}
 	render, err := router.getRender(w, r)
 	rootTemplate, _ := router.templates.Clone()
@@ -229,7 +229,7 @@ func (router *Router) handleTemplateError(w http.ResponseWriter, r *http.Request
 	w.Write([]byte("error executing template"))
 }
 
-func (router *Router) scanTemplates() {
+func (router *Router) ScanTemplates() {
 	slog.Info("scanning templates")
 	rootTemplate := template.New(time.Now().String())
 	rootTemplate.Funcs(router.funcs)

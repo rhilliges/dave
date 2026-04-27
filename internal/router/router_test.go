@@ -30,35 +30,30 @@ import (
 // - layouts
 // - - default layout - done
 // - - LAYOUT header - done
-// - - layout resolvers (HX-Request header example, D-LAYOUT default implementation) - TODO
+// - - layout resolvers (HX-Request header example, D-LAYOUT default implementation) - done
 // - globals
 // - - global available values - done
 // - - global template functions - done
 // - error handling
-// - - logging (log unexpected errors if some rendering failed) - TODO
+// - - logging (log unexpected errors if some rendering failed) - done
 // - - validation error during POST/PATCH/PUT - done (use HX-Location header)
 // - - redirect error - done (use HX-Location header)
 // - - fallback templates (unexpected error, not found) - done
 // - content response headers (html, text) - done
 // - d_form_handler header - done
 // - cache data to render template for quick browser refreshes - done
-// - user writes to ResponseWriter -> panic and tell the user why not to do that - TODO
-// - make header case insensitive (double check if needed)
-// - make configurable
-// - - default layout
-// - - default file extension
 //
 // DOCUMENTATION:
-// - requets lifecycle
-// - - template priority: index -> D-TEMPLATE -> HandlerMethod.template
-// - - layout priority: default -> layout resolvers -> HandlerMethod.layout
-// - only write error response codes, otherwise could hide error response codes from previous handlers
-// - globals
+// - request lifecycle
+// - template priority
+// - layout priority
+// - only write error response codes, writing body throws error
+// - globals, why, how and when to use them
+// - template functions why, how and when to use them
 // - - i18n example implementation
-// - available headers
-// - HandlerMethod:
-// - - router.HandlerMethod is available for full control but should better not be used (use HX-Location)
-// - document router scanTemplates function (make public?)
+// - reference for available headers
+// - how to use HX-Location for after creating an entity is successful
+// - document router scanTemplates function (startup vs first request vs dev mode behaviour)
 
 // What to do next:
 // - logging (log unexpected errors if some rendering failed) -> add/remove "DAVE" context variable - done
@@ -77,6 +72,11 @@ import (
 // Replace panics with error returns	Medium
 // Layout resolvers	For HX-Request header handling
 // Configurable defaults	Layout name, file extension
+// - make header case insensitive (double check if needed)
+// - make configurable
+// - - default layout
+// - - default file extension
+// - user writes to ResponseWriter -> panic and tell the user why not to do that - TODO
 
 type testTemplate struct {
 	location string
