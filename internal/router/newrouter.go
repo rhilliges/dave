@@ -185,7 +185,13 @@ func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	r = r.WithContext(contextWithLogger(r.Context(), requestLogger))
 
 	if router.templates == nil || router.config.DevMode {
-		router.ScanTemplates()
+		if err := router.ScanTemplates(); err != nil {
+			requestLogger.Error("failed to scan templates", "error", err)
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(fmt.Sprintf("error scanning templates: %s", err)))
+			return
+		}
 	}
 	render, err := router.getRender(w, r)
 	rootTemplate, _ := router.templates.Clone()
@@ -245,16 +251,18 @@ func (router *Router) handleTemplateError(w http.ResponseWriter, r *http.Request
 	w.Write([]byte("error executing template"))
 }
 
-func (router *Router) ScanTemplates() {
+func (router *Router) ScanTemplates() error {
 	slog.Info("scanning templates")
 	rootTemplate := template.New(time.Now().String())
 	rootTemplate.Funcs(router.funcs)
 	ext := router.config.getTemplateExtension()
 	root := router.fs
+	var scanErr error
 	fs.WalkDir(root, ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			slog.Error("failed to walk directory", "path", path, "error", err)
-			panic(err)
+			scanErr = fmt.Errorf("failed to walk directory %s: %w", path, err)
+			return scanErr
 		}
 		if path == "." {
 			return nil
@@ -272,23 +280,30 @@ func (router *Router) ScanTemplates() {
 		file, err := root.Open(path)
 		if err != nil {
 			slog.Error("failed to open template file", "template", path, "error", err)
-			panic(err)
+			scanErr = fmt.Errorf("failed to open template file %s: %w", path, err)
+			return scanErr
 		}
 		defer file.Close()
 		content, err := io.ReadAll(file)
 		if err != nil {
 			slog.Error("failed to read template file", "template", path, "error", err)
-			panic(err)
+			scanErr = fmt.Errorf("failed to read template file %s: %w", path, err)
+			return scanErr
 		}
 		_, err = newTemplate.Parse(string(content))
 		if err != nil {
 			slog.Error("failed to parse template", "template", path, "error", err)
-			panic(err)
+			scanErr = fmt.Errorf("failed to parse template %s: %w", path, err)
+			return scanErr
 		}
 		return nil
 	})
+	if scanErr != nil {
+		return scanErr
+	}
 	slog.Info("template scanning complete", "count", len(rootTemplate.Templates()))
 	router.templates = rootTemplate
+	return nil
 }
 
 func (router *Router) getRender(w http.ResponseWriter, r *http.Request) (*Render, error) {

@@ -19,48 +19,67 @@ import (
 )
 
 // FEATURES:
-// - file based routing - done
-// - path variables - done
-// - resolvers - done
-// - CRUD - done
-// - - POST - done
-// - - PUT - done
-// - - PATCH - done
-// - - DELETE - done
-// - components (nested templates) - done
-// - TEMPLATE_NAME header - done
+// - file based routing
+// - path variables
+// - resolvers
+// - CRUD
+// - - POST
+// - - PUT
+// - - PATCH
+// - - DELETE
+// - components (nested templates)
+// - TEMPLATE_NAME header
 // - layouts
-// - - default layout - done
-// - - LAYOUT header - done
-// - - layout resolvers (HX-Request header example, D-LAYOUT default implementation) - done
+// - - default layout
+// - - LAYOUT header
+// - - layout resolvers (HX-Request header example, D-LAYOUT default implementation)
 // - globals
-// - - global available values - done
-// - - global template functions - done
+// - template functions
 // - error handling
-// - - logging (log unexpected errors if some rendering failed) - done
-// - - validation error during POST/PATCH/PUT - done (use HX-Location header)
-// - - redirect error - done (use HX-Location header)
-// - - fallback templates (unexpected error, not found) - done
-// - content response headers (html, text) - done
-// - d_form_handler header - done
-// - cache data to render template for quick browser refreshes - done
-// - logging (log unexpected errors if some rendering failed) -> add/remove "DAVE" context variable - done
-// - user writes to ResponseWriter -> log error - done
+// - - logging (log unexpected errors if some rendering failed)
+// - - validation error during POST/PATCH/PUT (use HX-Location header)
+// - - redirect error (use HX-Location header)
+// - - fallback templates (unexpected error, not found)
+// - content response headers (html, text)
+// - d_form_handler header
+// - cache data to render template for quick browser refreshes
+// - logging (log unexpected errors if some rendering failed) -> add/remove "DAVE" context variable
+// - user writes to ResponseWriter -> log error
+// - make configurable
+// - - default layout
+// - - default file extension
+
 //
 // DOCUMENTATION:
 // - what is this project (easy to use w/ HTMX, great DX)
+// - how to use is (step by step instructions on how to build an app)
+// - - start with simple index file (some app with a table)
+// - - add a global + use it in the template file
+// - - introduce a path variable + load load data using path variable plus a global
+// - - using func to format dates
+// - - use form handlers + HX-Location to redirect when entity was created/updated/removed
+// - - use template header to e.g. show dialogs
+// - - use layout header to add a fullscreen mode
+// - - helpful links
+// - - - HTMX implementation patterns
+// - - - hyperscript for client side stuff
+// - - - AlpineJS
 // - request lifecycle
 // - template priority
 // - layout priority
 // - only write error response codes, writing body throws error
 // - globals, why, how and when to use them
 // - template functions why, how and when to use them
-// - - i18n example implementation
+// - - i18n example implementation (load translation file + add template func to get value based on key)
 // - reference for available headers
 // - how to use HX-Location for after creating an entity is successful
 // - document router scanTemplates function (startup vs first request vs dev mode behaviour)
 // - route conflict resolution
 // - user writes to ResponseWriter
+// - document all Conf options
+// - developer experience
+// - - what does dev mode do?
+// - - how to auto reload using air (don't recompile go code if only templates change)
 
 // What to do next:
 // - dev experience (caching, scanTemplates)
@@ -74,10 +93,6 @@ import (
 
 // TODOs
 // Handle ParseForm() error	Low
-// Replace panics with error returns	Medium
-// - make configurable
-// - - default layout
-// - - default file extension
 
 type testTemplate struct {
 	location string
@@ -953,8 +968,6 @@ func TestRouter_DX_RescanTemplates(t *testing.T) {
 // 	assert.False(t, resolverCalled)
 // }
 
-// Configurable defaults tests
-
 func TestRouter_ConfigurableDefaultLayout(t *testing.T) {
 	templates := []testTemplate{
 		{"layouts/main.tmpl", "main-layout:{{.content}}"},
@@ -1025,4 +1038,23 @@ func TestRouter_ConfigurableTemplateExtensionWithLayout(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 
 	assert.Equal(t, "layout:page-content", string(body))
+}
+
+func TestRouter_ScanTemplates_InvalidTemplate_ReturnsErrorInResponse(t *testing.T) {
+	templates := []testTemplate{
+		{"path/to/index.tmpl", "{{.unclosed"},
+	}
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
+	req := httptest.NewRequest("GET", "/path/to", nil)
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	resp := rec.Result()
+	body, _ := io.ReadAll(resp.Body)
+
+	assert.Contains(t, string(body), "error")
+	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
 }
