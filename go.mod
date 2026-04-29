@@ -1,4 +1,4 @@
-module dave-framework.net/router~
+module github.com/rhilliges/dave
 
 go 1.22.5
 
