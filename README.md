@@ -50,7 +50,7 @@ First, create a layout that wraps all pages. Create `templates/layouts/default.t
 </html>
 ```
 
-Now create a simple homepage at `templates/peeps/index.tmpl`:
+And add a simple template at `templates/peeps/index.tmpl`:
 
 ```html
 <div class="max-w-2xl mx-auto p-4">
@@ -67,6 +67,7 @@ Globals provide data and services to all templates. Register a `PeepService` tha
 
 ```go
 type PeepService struct {
+    // TODO use an in-memory slice instead
     db *sql.DB
 }
 
@@ -87,7 +88,7 @@ r.Use(
 )
 ```
 
-Now update `templates/peeps/index.tmpl` to display the timeline. Note: we're using `{{.CreatedAt}}` for now—we'll add a `date` formatter in step 4.
+Now update `templates/peeps/index.tmpl` to display the timeline. Note: we're using `{{.CreatedAt}}` for now—we'll add a `date` formatter in the next step.
 
 ```html
 <div class="max-w-2xl mx-auto p-4">
@@ -108,6 +109,8 @@ Now update `templates/peeps/index.tmpl` to display the timeline. Note: we're usi
   {{end}}
 </div>
 ```
+
+TODO: user needs to recompile. introduce DevMode here
 
 ### 3. Format Data with Template Functions
 
@@ -199,6 +202,7 @@ Use `d_form_handler` to specify which handler to invoke:
 
 The handler's return value is accessible in templates via `{{.handler_result}}`. To skip layout rendering, you can use a [Layout Resolver](#layout-resolvers).
 
+TODO: this step doesn't feel right
 ### 6. Use Template Headers for Dialogs
 
 Create `templates/peeps/create.tmpl` alongside `templates/peeps/index.tmpl`.
@@ -214,6 +218,8 @@ Request `/peeps` with header `D-TEMPLATE: create` to render the create template 
   New Peep
 </button>
 ```
+
+TODO: review stuff after this point
 
 ## Request Lifecycle
 
@@ -344,7 +350,9 @@ For language detection based on `Accept-Language`, use a global to provide the d
 | `D-TEMPLATE` | Override the template name (default: `index`) |
 | `D-LAYOUT`   | Override the layout                           |
 
-## Layout Resolvers
+## Layouts
+
+### Layout Resolvers
 
 Dynamically choose layouts based on the request:
 
@@ -360,7 +368,7 @@ r.Use(
 )
 ```
 
-## Layout Priority
+### Layout Priority
 
 1. `D-LAYOUT` header (highest priority)
 2. Layout resolver function
