@@ -1,3 +1,7 @@
+TODO:
+- test for adding globals to layouts
+- test for //index error
+
 # Dave
 
 A file-based router for Go, built for HTMX applications.

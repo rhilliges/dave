@@ -245,7 +245,11 @@ func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		router.handleTemplateError(w, r)
 		return
 	}
-	err = rootTemplate.ExecuteTemplate(w, render.layout, map[string]template.HTML{"content": template.HTML(content.String())})
+	layoutData := map[string]any{
+		"content": template.HTML(content.String()),
+		"globals": render.globals,
+	}
+	err = rootTemplate.ExecuteTemplate(w, render.layout, layoutData)
 	if err != nil {
 		requestLogger.Error("layout execution failed", "layout", render.layout, "error", err)
 		router.handleTemplateError(w, r)
