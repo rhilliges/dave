@@ -49,45 +49,15 @@ import (
 // - make configurable
 // - - default layout
 // - - default file extension
-
-//
-// DOCUMENTATION:
-// - what is this project (easy to use w/ HTMX, great DX)
-// - how to use is (step by step instructions on how to build an app)
-// - - start with simple index file (some app with a table)
-// - - add a global + use it in the template file
-// - - introduce a path variable + load load data using path variable plus a global
-// - - using func to format dates
-// - - use form handlers + HX-Location to redirect when entity was created/updated/removed
-// - - use template header to e.g. show dialogs
-// - - use layout header to add a fullscreen mode
-// - - helpful links
-// - - - HTMX implementation patterns
-// - - - hyperscript for client side stuff
-// - - - AlpineJS
-// - request lifecycle
-// - template priority
-// - layout priority
-// - only write error response codes, writing body throws error
-// - globals, why, how and when to use them
-// - template functions why, how and when to use them
-// - - i18n example implementation (load translation file + add template func to get value based on key)
-// - reference for available headers
-// - how to use HX-Location for after creating an entity is successful
-// - document router scanTemplates function (startup vs first request vs dev mode behaviour)
-// - route conflict resolution
-// - user writes to ResponseWriter
-// - document all Conf options
-// - document form parsing behavior
-// - developer experience
-// - - what does dev mode do?
-// - - how to auto reload using air (don't recompile go code if only templates change)
+// - utility func Global(name string)
+// - layout resolvers (HX-Request header example, D-LAYOUT default implementation)
 
 // What to do next:
+// - change accessing path variables to just use template func
+// - fix i18n stuff
+// - custom fallback templates for e.g. auth errors
 // - dev experience (caching, scanTemplates)
 // - clone root templates before rendering
-// - custom fallback templates for e.g. auth errors
-// - layout resolvers (HX-Request header example, D-LAYOUT default implementation)
 // - figure out middlewares
 // - how to integrate middleware? (authentication, authorization)
 // - register path resolvers using reflection on the package path vs. a path variable - see if feasible
@@ -267,7 +237,7 @@ func TestRouter_Get(t *testing.T) {
 			daveRequest := GetRequest(r.Context())
 			pathVariables := daveRequest.PathVariables()
 			resolverCalled = true
-			value := VariableValue(r, "var1")
+			value := PathVariable(r, "var1")
 			assert.Equal(t, "value1", value)
 			assert.Equal(t, "value1", pathVariables["var1"])
 			assert.Equal(t, "value2", pathVariables["var2"])
@@ -519,7 +489,7 @@ func TestRouter_ResourceNotFoundError(t *testing.T) {
 		FormHandler(
 			"var1",
 			Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
-				value := VariableValue(r, "var1")
+				value := PathVariable(r, "var1")
 				return nil, NotFound(fmt.Errorf("no entity found for %s", value))
 			}),
 		),
@@ -549,7 +519,7 @@ func TestRouter_UnexpectedError(t *testing.T) {
 		FormHandler(
 			"var1",
 			Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
-				value := VariableValue(r, "var1")
+				value := PathVariable(r, "var1")
 				return nil, Unexpected(fmt.Errorf("some unexpected error resolving var1=%s", value))
 			}),
 		),
@@ -580,7 +550,7 @@ func TestRouter_UnexpectedErrorFallback(t *testing.T) {
 		FormHandler(
 			"var1",
 			Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
-				value := VariableValue(r, "var1")
+				value := PathVariable(r, "var1")
 				return nil, Unexpected(fmt.Errorf("some unexpected error resolving var1=%s", value))
 			}),
 		),
@@ -610,7 +580,7 @@ func TestRouter_ResourceNotFoundErrorFallback(t *testing.T) {
 		FormHandler(
 			"var1",
 			Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
-				value := VariableValue(r, "var1")
+				value := PathVariable(r, "var1")
 				return nil, NotFound(fmt.Errorf("no entity found for %s", value))
 			}),
 		),

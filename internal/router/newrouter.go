@@ -61,7 +61,7 @@ func (r *Render) Globals() map[string]any {
 	return r.globals
 }
 
-const RequestContextKey = "dave-request"
+type requestContextKey struct{}
 
 type loggerContextKey struct{}
 
@@ -150,8 +150,8 @@ func Post(resolverFunc FormHandlerFunc) FormHandlerConfFunc {
 	return MethodHandler(http.MethodPost, resolverFunc)
 }
 
-func Put(resoverFunc FormHandlerFunc) FormHandlerConfFunc {
-	return MethodHandler(http.MethodPut, resoverFunc)
+func Put(resolverFunc FormHandlerFunc) FormHandlerConfFunc {
+	return MethodHandler(http.MethodPut, resolverFunc)
 }
 
 func Patch(resolverFunc FormHandlerFunc) FormHandlerConfFunc {
@@ -245,7 +245,7 @@ func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		router.handleTemplateError(w, r)
 		return
 	}
-	err = rootTemplate.ExecuteTemplate(w, render.layout, map[string]string{"content": content.String()})
+	err = rootTemplate.ExecuteTemplate(w, render.layout, map[string]template.HTML{"content": template.HTML(content.String())})
 	if err != nil {
 		requestLogger.Error("layout execution failed", "layout", render.layout, "error", err)
 		router.handleTemplateError(w, r)
@@ -347,7 +347,7 @@ func (router *Router) getRender(w http.ResponseWriter, r *http.Request) (*Render
 		}
 	}
 
-	reqPath := strings.Join([]string{r.URL.Path, templateName}, "/")
+	reqPath := strings.TrimSuffix(r.URL.Path, "/") + "/" + templateName
 	template, pathVariables = router.parseRequestPath(router.templates, reqPath)
 	logger.Debug("resolved template", "template", template, "path_variables", pathVariables)
 
@@ -404,7 +404,7 @@ func (router *Router) getRender(w http.ResponseWriter, r *http.Request) (*Render
 		}
 		resolverCtx := context.WithValue(
 			r.Context(),
-			RequestContextKey,
+			requestContextKey{},
 			Render{
 				template,
 				pathVariables,
@@ -479,13 +479,22 @@ func stripTemplateSuffix(t string, ext string) string {
 	return t[:i]
 }
 
+// GetRequest retrieves the Render context from the request context.
+// Use this in form handlers to access path variables, globals, and other render information.
 func GetRequest(context context.Context) Render {
-	return context.Value(RequestContextKey).(Render)
+	return context.Value(requestContextKey{}).(Render)
 }
 
-func VariableValue(r *http.Request, varName string) any {
-	request := r.Context().Value(RequestContextKey).(Render)
-	return request.pathVariables[varName]
+// PathVariable retrieves a path variable from the request context by name.
+func PathVariable(r *http.Request, varName string) any {
+	render := r.Context().Value(requestContextKey{}).(Render)
+	return render.pathVariables[varName]
+}
+
+// GlobalValue retrieves a global value from the request context by name.
+func GlobalValue(r *http.Request, name string) any {
+	render := r.Context().Value(requestContextKey{}).(Render)
+	return render.globals[name]
 }
 
 type daveError struct {
