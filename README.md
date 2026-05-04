@@ -1,4 +1,5 @@
 TODO:
+
 - test for adding globals to layouts
 - test for //index error
 
@@ -155,9 +156,9 @@ Create `templates/peeps/{id}/index.tmpl` for viewing a single peep:
 
 ### 5. Handle Form Submissions
 
-Form handlers process POST/PUT/PATCH/DELETE requests.
+TODO: split this step in two
 
-TODO: show how to do validation
+Form handlers process POST/PUT/PATCH/DELETE requests. Use `router.FormResponse` for validation and preserving form state.
 
 ```go
 r.Use(
@@ -165,19 +166,39 @@ r.Use(
         router.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
             content := r.FormValue("content")
             author := r.FormValue("author")
+
+            // Create FormResponse to handle validation
+            form := router.NewFormResponse()
+            form.State["content"] = []string{content}
+            form.State["author"] = []string{author}
+
+            // Validate
+            if content == "" {
+                form.AddError("content", "Content is required")
+            }
+            if author == "" {
+                form.AddError("author", "Author is required")
+            }
+            if form.HasErrors() {
+                return form, nil // Re-render form with errors
+            }
+
+            // Create the peep
             peep, err := db.CreatePeep(content, author)
             if err != nil {
                 return nil, router.Unexpected(err)
             }
+
             // Redirect after successful creation
             w.Header().Set("HX-Location", "/peeps/"+peep.ID)
-            return peep, nil
+            form.Result = peep
+            return form, nil
         }),
     ),
 )
 ```
 
-Add this form to `templates/peeps/index.tmpl` or create a separate `templates/peeps/create.tmpl` for use with the `D-TEMPLATE` header:
+Add this form to `templates/peeps/index.tmpl` or create a separate `templates/peeps/create.tmpl` for use with the `D-TEMPLATE` header.
 Use `d_form_handler` to specify which handler to invoke:
 
 ```html
@@ -186,28 +207,43 @@ Use `d_form_handler` to specify which handler to invoke:
   hx-vals='{"d_form_handler": "createPeep"}'
   class="space-y-4"
 >
-  <textarea
-    name="content"
-    required
-    class="w-full p-2 border rounded"
-    placeholder="What's happening?"
-  ></textarea>
-  <input
-    name="author"
-    required
-    class="w-full p-2 border rounded"
-    placeholder="Your name"
-  />
+  <div>
+    <textarea
+      name="content"
+      class="w-full p-2 border rounded {{if .form.HasError "content"}}border-red-500{{end}}"
+      placeholder="What's happening?"
+    >{{.form.Value "content" ""}}</textarea>
+    {{if .form.HasError "content"}}
+      <p class="text-red-500 text-sm">{{index (.form.Errors "content") 0}}</p>
+    {{end}}
+  </div>
+  <div>
+    <input
+      name="author"
+      class="w-full p-2 border rounded {{if .form.HasError "author"}}border-red-500{{end}}"
+      placeholder="Your name"
+      value="{{.form.Value "author" ""}}"
+    />
+    {{if .form.HasError "author"}}
+      <p class="text-red-500 text-sm">{{index (.form.Errors "author") 0}}</p>
+    {{end}}
+  </div>
   <button type="submit" class="bg-blue-500 text-white px-4 py-2 rounded">
     Post Peep
   </button>
 </form>
 ```
 
-The handler's return value is accessible in templates via `{{.handler_result}}`. To skip layout rendering, you can use a [Layout Resolver](#layout-resolvers).
+When a handler returns a `*router.FormResponse`:
+
+- `{{.form}}` contains the full FormResponse with validation state
+- `{{.result}}` contains `FormResponse.Result` (the created entity, if any)
+
+For non-FormResponse returns, `{{.result}}` contains the raw return value. To skip layout rendering, you can use a [Layout Resolver](#layout-resolvers).
+
+### 6. Use Template Headers for Dialogs
 
 TODO: this step doesn't feel right
-### 6. Use Template Headers for Dialogs
 
 Create `templates/peeps/create.tmpl` alongside `templates/peeps/index.tmpl`.
 
@@ -236,7 +272,7 @@ Every request flows through these stages:
 5. **Evaluate globals** - Call all registered global functions to populate `{{.globals}}`
 6. **Parse form data** - Automatically parse `application/x-www-form-urlencoded` or `multipart/form-data`
 7. **Execute form handler** - If `d_form_handler` is specified, run the matching handler for the HTTP method (use `router.GlobalValue()` and `router.PathVariable()` helpers)
-8. **Build template data** - Assemble `path_variables`, `globals`, `handler_result`, and `error` into the template context
+8. **Build template data** - Assemble `path_variables`, `globals`, `result`, `form` (if FormResponse), and `error` into the template context
 9. **Render template** - Execute the matched template with the assembled data
 10. **Wrap in layout** - If a layout was resolved and exists, render it with `{{.content}}` containing the template output
 
@@ -431,17 +467,66 @@ Handlers should only set headers and status codes—let Dave render the template
 
 - Write to response body: `w.Write([]byte("..."))` (will be logged as error)
 
-Handler return values are accessible in templates via `{{.handler_result}}`:
+Handler return values are accessible in templates via `{{.result}}`:
 
 ```html
 <!-- If handler returns a Peep struct -->
 <div class="p-4 border rounded">
-  <p class="font-bold">{{.handler_result.Author}}</p>
-  <p>{{.handler_result.Content}}</p>
+  <p class="font-bold">{{.result.Author}}</p>
+  <p>{{.result.Content}}</p>
 </div>
 ```
 
-## Form Parsing
+## Form Handling
+
+### FormResponse
+
+Use `router.FormResponse` to handle form validation and preserve form state across submissions:
+
+```go
+router.FormHandler("updateUser",
+    router.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
+        form := router.NewFormResponse()
+
+        // Preserve submitted values
+        form.State["name"] = []string{r.FormValue("name")}
+        form.State["email"] = []string{r.FormValue("email")}
+
+        // Validate
+        if r.FormValue("name") == "" {
+            form.AddError("name", "Name is required")
+        }
+        if r.FormValue("email") == "" {
+            form.AddError("email", "Email is required")
+        }
+
+        if form.HasErrors() {
+            return form, nil // Re-render with errors
+        }
+
+        // Process valid submission
+        user, err := db.UpdateUser(r.FormValue("name"), r.FormValue("email"))
+        if err != nil {
+            return nil, router.Unexpected(err)
+        }
+
+        form.Result = user
+        return form, nil
+    }),
+)
+```
+
+When returning `*FormResponse`:
+
+- `{{.form}}` is populated with the FormResponse
+- `{{.result}}` contains `FormResponse.Result`
+
+When returning any other type:
+
+- `{{.result}}` contains the raw return value
+- `{{.form}}` is nil
+
+### Form Parsing
 
 Dave automatically parses forms before calling handlers:
 
@@ -593,13 +678,27 @@ router.FormHandler("resource",
 
 Data available in templates:
 
-| Variable                     | Type     | Description                           |
-| ---------------------------- | -------- | ------------------------------------- |
-| `{{.globals.<name>}}`        | `any`    | Values from Global providers          |
-| `{{.path_variables.<name>}}` | `string` | Extracted URL path variables          |
-| `{{.handler_result}}`        | `any`    | Return value from form handler        |
-| `{{.error}}`                 | `string` | Error message (in fallback templates) |
-| `{{.content}}`               | `string` | Page content (in layout templates)    |
+| Variable                     | Type            | Description                                                        |
+| ---------------------------- | --------------- | ------------------------------------------------------------------ |
+| `{{.globals.<name>}}`        | `any`           | Values from Global providers                                       |
+| `{{.path_variables.<name>}}` | `string`        | Extracted URL path variables                                       |
+| `{{.result}}`                | `any`           | Return value from handler (or `FormResponse.Result`)               |
+| `{{.form}}`                  | `*FormResponse` | Form state and validation errors (if handler returns FormResponse) |
+| `{{.error}}`                 | `string`        | Error message (in fallback templates)                              |
+| `{{.content}}`               | `string`        | Page content (in layout templates)                                 |
+
+### FormResponse Methods
+
+When a handler returns `*router.FormResponse`, these methods are available in templates:
+
+| Method                          | Returns    | Description                         |
+| ------------------------------- | ---------- | ----------------------------------- |
+| `{{.form.HasErrors}}`           | `bool`     | True if any validation errors exist |
+| `{{.form.HasError "field"}}`    | `bool`     | True if field has validation error  |
+| `{{.form.Errors "field"}}`      | `[]string` | Validation error messages for field |
+| `{{.form.Value "field" "def"}}` | `string`   | First value for field, or default   |
+| `{{.form.Values "field"}}`      | `[]string` | All values for field (multi-select) |
+| `{{.form.Result}}`              | `any`      | The result data (same as .result)   |
 
 ## Helpful Links
 

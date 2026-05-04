@@ -38,7 +38,6 @@ import (
 // - template functions
 // - error handling
 // - - logging (log unexpected errors if some rendering failed)
-// - - validation error during POST/PATCH/PUT (use HX-Location header)
 // - - redirect error (use HX-Location header)
 // - - fallback templates (unexpected error, not found)
 // - content response headers (html, text)
@@ -53,6 +52,7 @@ import (
 // - layout resolvers (HX-Request header example, D-LAYOUT default implementation)
 
 // What to do next:
+// - implement Form object
 // - change accessing path variables to just use template func
 // - fix i18n stuff
 // - custom fallback templates for e.g. auth errors
@@ -220,7 +220,7 @@ func TestRouter_UseGlobalFunctions(t *testing.T) {
 
 func TestRouter_Get(t *testing.T) {
 	templates := []testTemplate{
-		{"v1/{var1}/v2/{var2}/index.tmpl", "{{.handler_result}},{{.path_variables.var2}}"},
+		{"v1/{var1}/v2/{var2}/index.tmpl", "{{.result}},{{.path_variables.var2}}"},
 	}
 	router, cleanup := prepareTest(templates)
 	defer cleanup()
@@ -297,7 +297,7 @@ func TestRouter_Post(t *testing.T) {
 
 func TestRouter_Put(t *testing.T) {
 	templates := []testTemplate{
-		{"v1/{var1}/{var2}/index.tmpl", "{{.path_variables.var1}},{{.handler_result}}"},
+		{"v1/{var1}/{var2}/index.tmpl", "{{.path_variables.var1}},{{.result}}"},
 	}
 	router, cleanup := prepareTest(templates)
 	defer cleanup()
@@ -335,7 +335,7 @@ func TestRouter_Put(t *testing.T) {
 
 func TestRouter_Patch(t *testing.T) {
 	templates := []testTemplate{
-		{"v1/{var1}/{var2}/index.tmpl", "{{.path_variables.var1}},{{.handler_result}}"},
+		{"v1/{var1}/{var2}/index.tmpl", "{{.path_variables.var1}},{{.result}}"},
 	}
 	router, cleanup := prepareTest(templates)
 	defer cleanup()
@@ -373,7 +373,7 @@ func TestRouter_Patch(t *testing.T) {
 
 func TestRouter_Delete(t *testing.T) {
 	templates := []testTemplate{
-		{"v1/{var1}/{var2}/index.tmpl", "{{.path_variables.var1}},{{.handler_result}}"},
+		{"v1/{var1}/{var2}/index.tmpl", "{{.path_variables.var1}},{{.result}}"},
 	}
 	router, cleanup := prepareTest(templates)
 	defer cleanup()
@@ -429,7 +429,7 @@ func TestRouter_UnknownHandler(t *testing.T) {
 
 func TestRouter_HandlerDoesNotSupportMethod(t *testing.T) {
 	templates := []testTemplate{
-		{"v1/{var1}/v2/{var2}/index.tmpl", "{{.handler_result}},{{.path_variables.var2}}"},
+		{"v1/{var1}/v2/{var2}/index.tmpl", "{{.result}},{{.path_variables.var2}}"},
 	}
 	router, cleanup := prepareTest(templates)
 	defer cleanup()
@@ -1030,7 +1030,7 @@ func TestRouter_ScanTemplates_InvalidTemplate_ReturnsErrorInResponse(t *testing.
 
 func TestRouter_MultipartForm_ConfigurableMaxFormSize(t *testing.T) {
 	templates := []testTemplate{
-		{"path/to/index.tmpl", "result:{{.handler_result}}"},
+		{"path/to/index.tmpl", "result:{{.result}}"},
 	}
 	router, cleanup := prepareTest(templates)
 	defer cleanup()
@@ -1063,4 +1063,111 @@ func TestRouter_MultipartForm_ConfigurableMaxFormSize(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Equal(t, "result:configured-size", string(respBody))
+}
+
+func TestRouter_FormResponse_ExposedAsFormInTemplateContext(t *testing.T) {
+	templates := []testTemplate{
+		{"path/to/index.tmpl", "hasErrors:{{.form.HasErrors}},name:{{.form.Value \"name\" \"\"}},error:{{if .form.HasError \"name\"}}{{index (.form.Errors \"name\") 0}}{{end}}"},
+	}
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
+	router.Use(
+		FormHandler("createUser",
+			Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
+				formResponse := NewFormResponse()
+				formResponse.State = r.Form
+				if formResponse.Value("name", "") == "Jane" {
+					formResponse.AddError("name", "name should not be Jane")
+				}
+				return formResponse, nil
+			}),
+		),
+	)
+
+	data := url.Values{}
+	data.Add("d_form_handler", "createUser")
+	data.Add("name", "Jane")
+	req := httptest.NewRequest("POST", "/path/to", strings.NewReader(data.Encode()))
+	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	resp := rec.Result()
+	body, _ := io.ReadAll(resp.Body)
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "hasErrors:true,name:Jane,error:name should not be Jane", string(body))
+}
+
+func TestRouter_FormResponse_ResultExposedAsHandlerResult(t *testing.T) {
+	templates := []testTemplate{
+		{"path/to/index.tmpl", "result:{{.result.ID}},formResult:{{.form.Result.ID}}"},
+	}
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
+	type User struct {
+		ID   string
+		Name string
+	}
+
+	router.Use(
+		FormHandler("createUser",
+			Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
+				formResponse := NewFormResponse()
+				formResponse.State["name"] = []string{r.FormValue("name")}
+				formResponse.Result = &User{ID: "123", Name: r.FormValue("name")}
+				return formResponse, nil
+			}),
+		),
+	)
+
+	data := url.Values{}
+	data.Add("d_form_handler", "createUser")
+	data.Add("name", "John")
+	req := httptest.NewRequest("POST", "/path/to", strings.NewReader(data.Encode()))
+	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	resp := rec.Result()
+	body, _ := io.ReadAll(resp.Body)
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "result:123,formResult:123", string(body))
+}
+
+func TestRouter_FormResponse_NonFormResponseStillWorksAsHandlerResult(t *testing.T) {
+	// Ensure backward compatibility - when handler returns non-FormResponse,
+	// .result should still work as before, and .form should be nil
+	templates := []testTemplate{
+		{"path/to/index.tmpl", "result:{{.result}},formNil:{{if .form}}notnil{{else}}nil{{end}}"},
+	}
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
+	router.Use(
+		FormHandler("simpleHandler",
+			Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
+				return "simple-result", nil
+			}),
+		),
+	)
+
+	data := url.Values{}
+	data.Add("d_form_handler", "simpleHandler")
+	req := httptest.NewRequest("POST", "/path/to", strings.NewReader(data.Encode()))
+	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	resp := rec.Result()
+	body, _ := io.ReadAll(resp.Body)
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "result:simple-result,formNil:nil", string(body))
 }

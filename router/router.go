@@ -424,7 +424,12 @@ func (router *Router) getRender(w http.ResponseWriter, r *http.Request) (*Render
 			return nil, err
 		}
 		logger.Info("form handler completed", "handler", formHandlerKey)
-		resolvedValues["handler_result"] = val
+		if formResponse, ok := val.(*FormResponse); ok {
+			resolvedValues["form"] = formResponse
+			resolvedValues["result"] = formResponse.Result
+		} else {
+			resolvedValues["result"] = val
+		}
 	}
 
 	return &Render{
