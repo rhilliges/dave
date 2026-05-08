@@ -488,9 +488,9 @@ func stripTemplateSuffix(t string, ext string) string {
 	return t[:i]
 }
 
-// GetRequest retrieves the Render context from the request context.
+// GetRender retrieves the Render context from the request context.
 // Use this in form handlers to access path variables, globals, and other render information.
-func GetRequest(context context.Context) Render {
+func GetRender(context context.Context) Render {
 	return context.Value(requestContextKey{}).(Render)
 }
 

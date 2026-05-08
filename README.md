@@ -28,264 +28,21 @@ func main() {
 }
 ```
 
-## Tutorial: Building Peeps
-
-Let's build a simple Twitter clone called "Peeps" to learn Dave's features.
-
-### 1. Set Up the Layout and Homepage
-
-First, create a layout that wraps all pages. Create `templates/layouts/default.tmpl`:
+Create `templates/index.tmpl`:
 
 ```html
 <!DOCTYPE html>
 <html>
   <head>
-    <title>Peeps</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <title>Welcome</title>
   </head>
-  <body class="bg-gray-100 min-h-screen">
-    <nav class="bg-white shadow-sm mb-4">
-      <div class="max-w-2xl mx-auto p-4">
-        <a href="/peeps" class="text-xl font-bold text-blue-500">Peeps</a>
-      </div>
-    </nav>
-    {{.content}}
+  <body>
+    <h1>Hello, Dave!</h1>
   </body>
 </html>
 ```
 
-And add a simple template at `templates/peeps/index.tmpl`:
-
-```html
-<div class="max-w-2xl mx-auto p-4">
-  <h1 class="text-2xl font-bold mb-4">Timeline</h1>
-  <p class="text-gray-500">No peeps yet. Check back later!</p>
-</div>
-```
-
-Visit `/peeps` to see your page wrapped in the layout.
-
-### 2. Add Global Data and the Timeline
-
-Globals provide data and services to all templates. Register a `PeepService` that templates can use to fetch data:
-
-```go
-type PeepService struct {
-    // TODO use an in-memory slice instead
-    db *sql.DB
-}
-
-func (s *PeepService) GetRecent(limit int) []*Peep {
-    // Return recent peeps from database
-    return peeps
-}
-
-func (s *PeepService) GetByID(id string) (*Peep, error) {
-    // Load peep from database
-    return peep, nil
-}
-
-r.Use(
-    router.Global("peepService", func() any {
-        return &PeepService{db: db}
-    }),
-)
-```
-
-Now update `templates/peeps/index.tmpl` to display the timeline. Note: we're using `{{.CreatedAt}}` for now—we'll add a `date` formatter in the next step.
-
-```html
-<div class="max-w-2xl mx-auto p-4">
-  <h1 class="text-2xl font-bold mb-4">Timeline</h1>
-  {{range .globals.peepService.GetRecent 50}}
-  <a
-    href="/peeps/{{.ID}}"
-    class="block border-b border-gray-200 py-4 hover:bg-gray-50"
-  >
-    <div class="flex items-center gap-2 mb-2">
-      <span class="font-semibold">{{.Author}}</span>
-      <span class="text-gray-500 text-sm">{{.CreatedAt}}</span>
-    </div>
-    <p class="text-gray-800">{{.Content}}</p>
-  </a>
-  {{else}}
-  <p class="text-gray-500">No peeps yet. Check back later!</p>
-  {{end}}
-</div>
-```
-
-TODO: user needs to recompile. introduce DevMode here
-
-### 3. Format Data with Template Functions
-
-```go
-r.Use(
-        router.Func("date", func(t time.Time) string {
-            return t.Format("Jan 2, 2006")
-            }),
-     )
-```
-
-Change the template to format the date: `{{.CreatedAt | date}}`
-
-### 4. Use Path Variables
-
-Create `templates/peeps/{id}/index.tmpl` for viewing a single peep:
-
-```html
-<div class="max-w-2xl mx-auto p-4">
-  <a href="/peeps" class="text-blue-500 hover:underline mb-4 inline-block"
-    >← Back to Timeline</a
-  >
-  {{with .globals.peepService.GetByID .path_variables.id}}
-  <div class="mt-4 p-4 border rounded bg-white">
-    <div class="flex items-center gap-2 mb-2">
-      <span class="font-semibold">{{.Author}}</span>
-      <span class="text-gray-500 text-sm">{{.CreatedAt}}</span>
-    </div>
-    <p class="text-gray-800">{{.Content}}</p>
-  </div>
-  {{else}}
-  <p class="text-gray-500">Peep not found</p>
-  {{end}}
-</div>
-```
-
-`/peeps/123` renders this template with `id = "123"`. The template uses `peepService.GetByID` (registered in section 2) to load the peep data.
-
-### 5. Handle Form Submissions
-
-TODO: split this step in two
-
-Form handlers process POST/PUT/PATCH/DELETE requests. Use `router.FormResponse` for validation and preserving form state.
-
-```go
-r.Use(
-    router.FormHandler("createPeep",
-        router.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
-            content := r.FormValue("content")
-            author := r.FormValue("author")
-
-            // Create FormResponse to handle validation
-            form := router.NewFormResponse()
-            form.State["content"] = []string{content}
-            form.State["author"] = []string{author}
-
-            // Validate
-            if content == "" {
-                form.AddError("content", "Content is required")
-            }
-            if author == "" {
-                form.AddError("author", "Author is required")
-            }
-            if form.HasErrors() {
-                return form, nil // Re-render form with errors
-            }
-
-            // Create the peep
-            peep, err := db.CreatePeep(content, author)
-            if err != nil {
-                return nil, router.Unexpected(err)
-            }
-
-            // Redirect after successful creation
-            w.Header().Set("HX-Location", "/peeps/"+peep.ID)
-            form.Result = peep
-            return form, nil
-        }),
-    ),
-)
-```
-
-Add this form to `templates/peeps/index.tmpl` or create a separate `templates/peeps/create.tmpl` for use with the `D-TEMPLATE` header.
-Use `d_form_handler` to specify which handler to invoke:
-
-```html
-<form
-  hx-post="/peeps"
-  hx-vals='{"d_form_handler": "createPeep"}'
-  class="space-y-4"
->
-  <div>
-    <textarea
-      name="content"
-      class="w-full p-2 border rounded {{if .form.HasError "content"}}border-red-500{{end}}"
-      placeholder="What's happening?"
-    >{{.form.Value "content" ""}}</textarea>
-    {{if .form.HasError "content"}}
-      <p class="text-red-500 text-sm">{{index (.form.Errors "content") 0}}</p>
-    {{end}}
-  </div>
-  <div>
-    <input
-      name="author"
-      class="w-full p-2 border rounded {{if .form.HasError "author"}}border-red-500{{end}}"
-      placeholder="Your name"
-      value="{{.form.Value "author" ""}}"
-    />
-    {{if .form.HasError "author"}}
-      <p class="text-red-500 text-sm">{{index (.form.Errors "author") 0}}</p>
-    {{end}}
-  </div>
-  <button type="submit" class="bg-blue-500 text-white px-4 py-2 rounded">
-    Post Peep
-  </button>
-</form>
-```
-
-When a handler returns a `*router.FormResponse`:
-
-- `{{.form}}` contains the full FormResponse with validation state
-- `{{.result}}` contains `FormResponse.Result` (the created entity, if any)
-
-For non-FormResponse returns, `{{.result}}` contains the raw return value. To skip layout rendering, you can use a [Layout Resolver](#layout-resolvers).
-
-### 6. Use Template Headers for Dialogs
-
-TODO: this step doesn't feel right
-
-Create `templates/peeps/create.tmpl` alongside `templates/peeps/index.tmpl`.
-
-Request `/peeps` with header `D-TEMPLATE: create` to render the create template instead of index:
-
-```html
-<button
-  hx-get="/peeps"
-  hx-headers='{"D-TEMPLATE": "create"}'
-  class="bg-blue-500 text-white px-4 py-2 rounded"
->
-  New Peep
-</button>
-```
-
-TODO: review stuff after this point
-
-## Request Lifecycle
-
-Every request flows through these stages:
-
-1. **Parse request path** - Extract the URL path from the request
-2. **Match template** - Find the best matching template file, extracting path variables (e.g., `/peeps/123` matches `peeps/{id}/index.tmpl` with `id = "123"`)
-3. **Resolve template name** - Check `D-TEMPLATE` header or default to `index`
-4. **Resolve layout** - Priority: `D-LAYOUT` header → layout resolver → default layout
-5. **Evaluate globals** - Call all registered global functions to populate `{{.globals}}`
-6. **Parse form data** - Automatically parse `application/x-www-form-urlencoded` or `multipart/form-data`
-7. **Execute form handler** - If `d_form_handler` is specified, run the matching handler for the HTTP method (use `router.GlobalValue()` and `router.PathVariable()` helpers)
-8. **Build template data** - Assemble `path_variables`, `globals`, `result`, `form` (if FormResponse), and `error` into the template context
-9. **Render template** - Execute the matched template with the assembled data
-10. **Wrap in layout** - If a layout was resolved and exists, render it with `{{.content}}` containing the template output
-
-## Template Priority
-
-When multiple templates could match a path, explicit paths take precedence over path variables:
-
-```
-/users/new     → users/new/index.tmpl      (explicit match)
-/users/123     → users/{id}/index.tmpl     (path variable)
-/users/456/posts/latest → users/{id}/posts/latest/index.tmpl
-/users/456/posts/789    → users/{id}/posts/{postId}/index.tmpl
-```
+Visit `http://localhost:8080/` to see your page.
 
 ## Globals
 
@@ -310,7 +67,7 @@ r.Use(
 
 Access in templates: `{{.globals.currentUser.Name}}`, `{{.globals.config.AppName}}`
 
-Access in handlers:
+Access in handlers (see next section):
 
 ```go
 userService := router.GlobalValue(r, "userService").(*UserService)
@@ -318,9 +75,143 @@ userService := router.GlobalValue(r, "userService").(*UserService)
 
 **When to use:**
 
-- Data needed on most pages (current user, navigation, permissions)
-- App-wide configuration
+- Data needed on most pages (current user, navigation, permissions, configuration)
 - Services that handlers or templates need to access
+
+## Form Handling
+
+### FormResponse
+
+Register form handler:
+
+```go
+router.FormHandler("updateUser",
+        router.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
+            form := router.NewFormResponse()
+
+            // Preserve submitted values
+            form.State["name"] = []string{r.FormValue("name")}
+            form.State["email"] = []string{r.FormValue("email")}
+
+            // Validate
+            if r.FormValue("name") == "" {
+            form.AddError("name", "Name is required")
+            }
+            if r.FormValue("email") == "" {
+            form.AddError("email", "Email is required")
+            }
+
+            if form.HasErrors() {
+            return form, nil // Re-render with errors
+            }
+
+            // Process valid submission
+            user, err := db.UpdateUser(r.FormValue("name"), r.FormValue("email"))
+                    if err != nil {
+                        return nil, router.Unexpected(err)
+                    }
+
+            form.Result = user
+            return form, nil
+        }),
+    )
+```
+
+Return `router.FormResponse` to handle form validation and preserve form state across submissions:
+
+When returning `*FormResponse`:
+
+- `{{.form}}` is populated with the FormResponse
+- `{{.result}}` shorthand for `FormResponse.Result`
+
+When returning any other type:
+
+- `{{.result}}` contains the raw return value
+- `{{.form}}` is nil
+
+### Template Usage
+
+When a handler returns `*router.FormResponse`, these methods are available in templates:
+
+| Method                          | Returns    | Description                         |
+| ------------------------------- | ---------- | ----------------------------------- |
+| `{{.form.HasErrors}}`           | `bool`     | True if any validation errors exist |
+| `{{.form.HasError "field"}}`    | `bool`     | True if field has validation error  |
+| `{{.form.Errors "field"}}`      | `[]string` | Validation error messages for field |
+| `{{.form.Value "field" "def"}}` | `string`   | First value for field, or default   |
+| `{{.form.Values "field"}}`      | `[]string` | All values for field (multi-select) |
+| `{{.form.Result}}`              | `any`      | The result data (same as .result)   |
+
+### Form Parsing
+
+Dave automatically parses forms before calling handlers:
+
+- `application/x-www-form-urlencoded`: standard form parsing
+- `multipart/form-data`: parsed with configurable max size (default 32MB)
+
+Access form values via `r.FormValue("field")` or `r.Form`.
+
+## Layouts
+
+Layouts wrap page content with shared structure (headers, footers, navigation). Create layout files in `layouts/`:
+
+`templates/layouts/default.tmpl`:
+
+```html
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>My App</title>
+  </head>
+  <body>
+    <nav><!-- navigation --></nav>
+    <main>{{.content}}</main>
+    <footer><!-- footer --></footer>
+  </body>
+</html>
+```
+
+The `{{.content}}` placeholder is replaced with the rendered page template. The default layout (`layouts/default.tmpl`) is applied automatically if it exists.
+
+### Layout Resolvers
+
+Dynamically choose layouts based on the request:
+
+```go
+r.Use(
+    router.LayoutResolver(func(r *http.Request) string {
+        // Skip layout for HTMX partial requests
+        if r.Header.Get("HX-Request") == "true" {
+            return "" // empty string = no layout
+        }
+        return "default"
+    }),
+)
+```
+
+### Layout Priority
+
+1. `D-LAYOUT` header (highest priority)
+2. Layout resolver function
+3. Default layout (`layouts/default.tmpl`)
+
+If the resolved layout doesn't exist, the template renders without a layout.
+
+## Components (aka Go templates)
+
+Reference other templates:
+
+`templates/components/button.tmpl`:
+
+```html
+<button class="btn">{{.}}</button>
+```
+
+`templates/posts/index.tmpl`:
+
+```html
+{{template "components/button" "Click Me"}}
+```
 
 ## Template Functions
 
@@ -333,6 +224,13 @@ r.Use(
         return fmt.Sprintf("$%.2f", float64(cents)/100)
     }),
 )
+```
+
+Use in templates:
+
+```html
+<p>{{upper .user.Name}}</p>
+<p>Total: {{formatMoney .order.TotalCents}}</p>
 ```
 
 **i18n Example:**
@@ -383,38 +281,18 @@ Template: `<h1>{{i18n "welcome_message"}}</h1>`
 
 For language detection based on `Accept-Language`, use a global to provide the detected language and access it in templates:
 
-## Headers Reference
-
-| Header       | Purpose                                       |
-| ------------ | --------------------------------------------- |
-| `D-TEMPLATE` | Override the template name (default: `index`) |
-| `D-LAYOUT`   | Override the layout                           |
-
-## Layouts
-
-### Layout Resolvers
-
-Dynamically choose layouts based on the request:
+## Configuration
 
 ```go
 r.Use(
-    router.LayoutResolver(func(r *http.Request) string {
-        // Skip layout for HTMX partial requests
-        if r.Header.Get("HX-Request") == "true" {
-            return "" // empty string = no layout
-        }
-        return "default"
+    router.Config(&router.Conf{
+        DevMode:           true,        // Rescan templates on each request
+        DefaultLayout:     "main",      // Default: "default"
+        TemplateExtension: ".html",     // Default: ".tmpl"
+        MaxFormSize:       10 << 20,    // Default: 32MB
     }),
 )
 ```
-
-### Layout Priority
-
-1. `D-LAYOUT` header (highest priority)
-2. Layout resolver function
-3. Default layout (`layouts/default.tmpl`)
-
-If the resolved layout doesn't exist, the template renders without a layout.
 
 ## Error Handling
 
@@ -429,7 +307,7 @@ Dave provides two error types that map to specific HTTP status codes and fallbac
 
 ```go
 // 404 - resource not found
-return nil, router.NotFound(fmt.Errorf("peep %s not found", id))
+return nil, router.NotFound(fmt.Errorf("user %s not found", id))
 
 // 500 - unexpected error (also logged automatically)
 return nil, router.Unexpected(fmt.Errorf("database error: %w", err))
@@ -459,9 +337,9 @@ Handlers should only set headers and status codes—let Dave render the template
 
 **What handlers can do:**
 
-- Set response headers: `w.Header().Set("HX-Location", "/peeps")`
+- Set response headers: `w.Header().Set("HX-Location", "/users")`
 - Set status codes: `w.WriteHeader(http.StatusCreated)`
-- Return data for templates: `return peep, nil`
+- Return data for templates: `return user, nil`
 
 **What handlers should NOT do:**
 
@@ -470,92 +348,45 @@ Handlers should only set headers and status codes—let Dave render the template
 Handler return values are accessible in templates via `{{.result}}`:
 
 ```html
-<!-- If handler returns a Peep struct -->
+<!-- If handler returns a Post struct -->
 <div class="p-4 border rounded">
-  <p class="font-bold">{{.result.Author}}</p>
-  <p>{{.result.Content}}</p>
+  <p class="font-bold">{{.result.Title}}</p>
+  <p>{{.result.Body}}</p>
 </div>
 ```
 
-## Form Handling
+## Request Lifecycle
 
-### FormResponse
+Every request flows through these stages:
 
-Use `router.FormResponse` to handle form validation and preserve form state across submissions:
+1. **Parse request path** - Extract the URL path from the request
+2. **Match template** - Find the best matching template file, extracting path variables (e.g., `/posts/123` matches `posts/{id}/index.tmpl` with `id = "123"`)
+3. **Resolve template name** - Check `D-TEMPLATE` header or default to `index`
+4. **Resolve layout** - Priority: `D-LAYOUT` header → layout resolver → default layout
+5. **Evaluate globals** - Call all registered global functions to populate `{{.globals}}`
+6. **Parse form data** - Automatically parse `application/x-www-form-urlencoded` or `multipart/form-data`
+7. **Execute form handler** - If `d_form_handler` is specified, run the matching handler for the HTTP method (use `router.GlobalValue()` and `router.PathVariable()` helpers)
+8. **Build template data** - Assemble `path_variables`, `globals`, `result`, `form` (if FormResponse), and `error` into the template context
+9. **Render template** - Execute the matched template with the assembled data
+10. **Wrap in layout** - If a layout was resolved and exists, render it with `{{.content}}` containing the template output
 
-```go
-router.FormHandler("updateUser",
-    router.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
-        form := router.NewFormResponse()
+## Template Priority
 
-        // Preserve submitted values
-        form.State["name"] = []string{r.FormValue("name")}
-        form.State["email"] = []string{r.FormValue("email")}
+When multiple templates could match a path, explicit paths take precedence over path variables:
 
-        // Validate
-        if r.FormValue("name") == "" {
-            form.AddError("name", "Name is required")
-        }
-        if r.FormValue("email") == "" {
-            form.AddError("email", "Email is required")
-        }
-
-        if form.HasErrors() {
-            return form, nil // Re-render with errors
-        }
-
-        // Process valid submission
-        user, err := db.UpdateUser(r.FormValue("name"), r.FormValue("email"))
-        if err != nil {
-            return nil, router.Unexpected(err)
-        }
-
-        form.Result = user
-        return form, nil
-    }),
-)
+```
+/users/new     → users/new/index.tmpl      (explicit match)
+/users/123     → users/{id}/index.tmpl     (path variable)
+/users/456/posts/latest → users/{id}/posts/latest/index.tmpl
+/users/456/posts/789    → users/{id}/posts/{postId}/index.tmpl
 ```
 
-When returning `*FormResponse`:
+## Headers Reference
 
-- `{{.form}}` is populated with the FormResponse
-- `{{.result}}` contains `FormResponse.Result`
-
-When returning any other type:
-
-- `{{.result}}` contains the raw return value
-- `{{.form}}` is nil
-
-### Form Parsing
-
-Dave automatically parses forms before calling handlers:
-
-- `application/x-www-form-urlencoded`: standard form parsing
-- `multipart/form-data`: parsed with configurable max size (default 32MB)
-
-Access form values via `r.FormValue("field")` or `r.Form`.
-
-## Configuration
-
-```go
-r.Use(
-    router.Config(&router.Conf{
-        DevMode:           true,        // Rescan templates on each request
-        DefaultLayout:     "main",      // Default: "default"
-        TemplateExtension: ".html",     // Default: ".tmpl"
-        MaxFormSize:       10 << 20,    // Default: 32MB
-    }),
-)
-```
-
-### Config Options
-
-| Option              | Default     | Description                         |
-| ------------------- | ----------- | ----------------------------------- |
-| `DevMode`           | `false`     | Rescan templates on every request   |
-| `DefaultLayout`     | `"default"` | Layout used when none specified     |
-| `TemplateExtension` | `".tmpl"`   | File extension for templates        |
-| `MaxFormSize`       | `32MB`      | Max size for multipart form uploads |
+| Header       | Purpose                                       |
+| ------------ | --------------------------------------------- |
+| `D-TEMPLATE` | Override the template name (default: `index`) |
+| `D-LAYOUT`   | Override the layout                           |
 
 ## Developer Experience
 
@@ -566,34 +397,18 @@ When `DevMode: true`:
 - Templates are rescanned on every request
 - Changes to templates are reflected immediately without restart
 
-### Auto-Reload with Air
+### Auto-Reload with mise + Air
 
-Use [Air](https://github.com/cosmtrek/air) for live reloading. Configure `.air.toml` to only watch Go files if you're using dev mode for templates:
+Use [mise](https://mise.jdx.dev) to manage tools and run the dev server with live reload:
 
-```toml
-[build]
-  cmd = "go build -o ./tmp/main ."
-  include_ext = ["go"]
-  exclude_dir = ["templates"]
+```bash
+mise install    # Install Go and Air
+mise run dev    # Start dev server with live reload
 ```
+
+The project includes `mise.toml` (tool definitions and tasks) and `.air.toml` (Air configuration). Air watches for Go file changes and automatically rebuilds/restarts the server.
 
 With `DevMode: true`, template changes reload instantly without recompiling Go code.
-
-## Components (aka Go templates)
-
-Reference other templates:
-
-`templates/components/button.tmpl`:
-
-```html
-<button class="btn">{{.}}</button>
-```
-
-`templates/peeps/index.tmpl`:
-
-```html
-{{template "components/button" "Click Me"}}
-```
 
 ## Advanced API
 
@@ -615,10 +430,10 @@ router.FormHandler("example",
 )
 ```
 
-For full access to the render context, use `router.GetRequest()`:
+For full access to the render context, use `router.GetRender()`:
 
 ```go
-render := router.GetRequest(r.Context())
+render := router.GetRender(r.Context())
 template := render.Template()
 layout := render.Layout()
 pathVars := render.PathVariables()
@@ -641,14 +456,6 @@ Access path variables in handlers using `router.PathVariable()`:
 
 ```go
 id := router.PathVariable(r, "id").(string)
-```
-
-### Global Value Access
-
-Access global values in handlers using `router.GlobalValue()`:
-
-```go
-userService := router.GlobalValue(r, "userService").(*UserService)
 ```
 
 ### Manual Template Scanning
@@ -686,19 +493,6 @@ Data available in templates:
 | `{{.form}}`                  | `*FormResponse` | Form state and validation errors (if handler returns FormResponse) |
 | `{{.error}}`                 | `string`        | Error message (in fallback templates)                              |
 | `{{.content}}`               | `string`        | Page content (in layout templates)                                 |
-
-### FormResponse Methods
-
-When a handler returns `*router.FormResponse`, these methods are available in templates:
-
-| Method                          | Returns    | Description                         |
-| ------------------------------- | ---------- | ----------------------------------- |
-| `{{.form.HasErrors}}`           | `bool`     | True if any validation errors exist |
-| `{{.form.HasError "field"}}`    | `bool`     | True if field has validation error  |
-| `{{.form.Errors "field"}}`      | `[]string` | Validation error messages for field |
-| `{{.form.Value "field" "def"}}` | `string`   | First value for field, or default   |
-| `{{.form.Values "field"}}`      | `[]string` | All values for field (multi-select) |
-| `{{.form.Result}}`              | `any`      | The result data (same as .result)   |
 
 ## Helpful Links
 

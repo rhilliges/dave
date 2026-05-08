@@ -50,9 +50,9 @@ import (
 // - - default file extension
 // - utility func Global(name string)
 // - layout resolvers (HX-Request header example, D-LAYOUT default implementation)
+// - implement Form object
 
 // What to do next:
-// - implement Form object
 // - change accessing path variables to just use template func
 // - fix i18n stuff
 // - custom fallback templates for e.g. auth errors
@@ -234,14 +234,14 @@ func TestRouter_Get(t *testing.T) {
 
 	router.Use(
 		FormHandler("handler1", Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
-			daveRequest := GetRequest(r.Context())
-			pathVariables := daveRequest.PathVariables()
+			daveRender := GetRender(r.Context())
+			pathVariables := daveRender.PathVariables()
 			resolverCalled = true
 			value := PathVariable(r, "var1")
 			assert.Equal(t, "value1", value)
 			assert.Equal(t, "value1", pathVariables["var1"])
 			assert.Equal(t, "value2", pathVariables["var2"])
-			daveRequest.Template()
+			daveRender.Template()
 			return "resolvedValue", nil
 		}),
 		),
@@ -268,7 +268,7 @@ func TestRouter_Post(t *testing.T) {
 		FormHandler(
 			"var1",
 			Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
-				// daveRequest := GetRequest(r.Context())
+				// daveRender := GetRender(r.Context())
 				// body, _ := io.ReadAll(r.Body)
 				assert.Equal(t, "d_form_handler=var1&input1=value1", r.Form.Encode())
 				postHandlerCalled = true
