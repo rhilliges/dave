@@ -52,11 +52,11 @@ import (
 // - layout resolvers (HX-Request header example, D-LAYOUT default implementation)
 // - implement Form object
 // - fix i18n stuff
+// - document accessing data through template func
 
 // What to do next:
-// - change accessing path variables to just use template func
 // - custom fallback templates for e.g. auth errors
-// - dev experience (caching, scanTemplates)
+// - dev experience (caching, ScanTemplates)
 // - clone root templates before rendering
 // - figure out middlewares/how to integrate middleware? (authentication, authorization)
 // - register path resolvers using reflection on the package path vs. a path variable - see if feasible

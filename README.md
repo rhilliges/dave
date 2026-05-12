@@ -4,7 +4,28 @@ A file-based router for Go, built for HTMX applications.
 
 Dave maps URL paths to template files automatically. No route definitions needed—just organize your `.tmpl` files in directories.
 
+## Table of Contents
+
+- [Quick Start](#quick-start)
+- [Globals](#globals)
+- [Form Handling](#form-handling)
+- [Layouts](#layouts)
+- [Components](#components-aka-go-templates)
+- [Template Functions](#template-functions)
+- [Configuration](#configuration)
+- [Error Handling](#error-handling)
+- [Request Lifecycle](#request-lifecycle)
+- [Template Priority](#template-priority)
+- [Headers Reference](#headers-reference)
+- [Developer Experience](#developer-experience)
+- [Advanced API](#advanced-api)
+- [Template Data Reference](#template-data-reference)
+
 ## Quick Start
+
+```bash
+go get github.com/rhilliges/dave
+```
 
 ```go
 package main
@@ -41,7 +62,7 @@ Visit `http://localhost:8080/` to see your page.
 
 ## Globals
 
-Globals provide a way to share data and services across all templates. They're evaluated on every request and have access to the request and render context.
+To share data and services across all templates, we can use Globals. They're evaluated on every request and have access to the request and render context.
 
 ```go
 r.Use(
@@ -54,7 +75,7 @@ r.Use(
         return appConfig
     }),
 
-    // Access path variables
+    // Inject services for templates and handlers
     dave.Global("userService", func(render *dave.Render) any {
         return &UserService{db: db}
     }),
@@ -89,7 +110,7 @@ r.Use(
 )
 ```
 
-Trigger a handler by including `d_form_handler` in your form:
+Trigger a handler by including `d_form_handler` input in your form:
 
 ```html
 <form method="POST">
@@ -110,7 +131,7 @@ dave.FormHandler("updateUser",
             form := dave.NewFormResponse()
 
             // Preserve submitted values
-            formResponse.State = r.Form
+            form.State = r.Form
             // or set explicitly
             form.State["name"] = []string{r.FormValue("name")}
             form.State["email"] = []string{r.FormValue("email")}
@@ -262,9 +283,8 @@ Use in templates:
 <p>Total: {{formatMoney .order.TotalCents}}</p>
 ```
 
-**i18n Example:**
-
-Since `Func` has access to the render context, i18n becomes simple - the function can read the language from globals directly:
+<details>
+<summary><strong>i18n Example</strong></summary>
 
 ```go
 // main.go
@@ -312,11 +332,13 @@ r.Use(
 )
 ```
 
-Template usage - no need to pass language explicitly:
+Template usage:
 
 ```html
 <h1>{{i18n "welcome_message"}}</h1>
 ```
+
+</details>
 
 ## Configuration
 
@@ -330,6 +352,13 @@ r.Use(
     }),
 )
 ```
+
+| Option              | Default     | Description                                                                                             |
+| ------------------- | ----------- | ------------------------------------------------------------------------------------------------------- |
+| `DevMode`           | `false`     | When true, templates are rescanned on every request. Disable in production for performance.             |
+| `DefaultLayout`     | `"default"` | Name of the layout applied when none is specified. Set to empty string to disable default layouts.      |
+| `TemplateExtension` | `".tmpl"`   | File extension used when scanning for template files.                                                   |
+| `MaxFormSize`       | `32MB`      | Maximum size for `multipart/form-data` uploads. Uses Go's bit-shift notation (e.g., `10 << 20` = 10MB). |
 
 ## Error Handling
 
@@ -496,29 +525,35 @@ Access path variables in handlers using `dave.PathVariable()`:
 id := dave.PathVariable(r, "id").(string)
 ```
 
-### Manual Template Scanning
-
-TODO: document force scan on startup before the first request coming in.
-
-Force a template rescan (useful for testing or custom reload logic):
-
-```go
-if err := r.ScanTemplates(); err != nil {
-    log.Fatal(err)
-}
-```
-
 ### All HTTP Method Handlers
 
 ```go
 dave.FormHandler("resource",
-    dave.Get(handler),     // GET requests
-    dave.Post(handler),    // POST requests
-    dave.Put(handler),     // PUT requests
-    dave.Patch(handler),   // PATCH requests
-    dave.Delete(handler),  // DELETE requests
-    dave.MethodHandler("OPTIONS", handler), // Custom method
-)
+        dave.Get(handler),     // GET requests
+        dave.Post(handler),    // POST requests
+        dave.Put(handler),     // PUT requests
+        dave.Patch(handler),   // PATCH requests
+        dave.Delete(handler),  // DELETE requests
+        dave.MethodHandler("OPTIONS", handler), // Custom method
+        )
+```
+
+### Manual Template Scanning
+
+Templates are scanned lazily on the first request. To scan templates at startup (e.g., to catch errors early or warm up before serving traffic), call `ScanTemplates()` manually:
+
+```go
+func main() {
+    fs := os.DirFS("templates")
+    r := dave.NewRouter(fs)
+
+    // Scan templates at startup
+    if err := r.ScanTemplates(); err != nil {
+        log.Fatal(err)
+    }
+
+    http.ListenAndServe(":8080", r)
+}
 ```
 
 ## Template Data Reference
@@ -534,7 +569,8 @@ Data available in templates:
 | `{{.error}}`                 | `string`        | Error message (in fallback templates)                              |
 | `{{.content}}`               | `string`        | Page content (in layout templates)                                 |
 
-### Function-Based Access (Alternative)
+<details>
+<summary><strong>Function-Based Access (Alternative)</strong></summary>
 
 If you prefer accessing data via template functions instead of dot-notation, you can implement your own accessor functions. This can also be helpful when debugging:
 
@@ -606,6 +642,8 @@ Then use in templates:
 <!-- Instead of {{.form.Errors "email"}} -->
 {{form | error "email"}}
 ```
+
+</details>
 
 ## Helpful Links
 
