@@ -901,6 +901,181 @@ func main() {
 }
 ```
 
+## 10. Bonus: Internationalization (i18n)
+
+Let's add multi-language support to demonstrate how globals and template functions work together.
+
+Create a `translations` directory with JSON files for each language:
+
+`translations/en.json`:
+
+```json
+{
+  "welcome": "Welcome",
+  "users": "Users",
+  "new_user": "New User",
+  "name": "Name",
+  "email": "Email",
+  "birthday": "Birthday",
+  "create": "Create User",
+  "back": "Back to Users",
+  "joined": "Joined"
+}
+```
+
+`translations/de.json`:
+
+```json
+{
+  "welcome": "Willkommen",
+  "users": "Benutzer",
+  "new_user": "Neuer Benutzer",
+  "name": "Name",
+  "email": "E-Mail",
+  "birthday": "Geburtstag",
+  "create": "Benutzer erstellen",
+  "back": "Zurück zu Benutzern",
+  "joined": "Beigetreten"
+}
+```
+
+Add translation loading and an i18n function to `main.go`:
+
+```go
+import (
+    "encoding/json"
+    "os"
+    "path/filepath"
+    "strings"
+    // ... other imports
+)
+
+// Translations maps language code to key-value pairs
+type Translations map[string]map[string]string
+
+func loadTranslations(dir string) Translations {
+    translations := make(Translations)
+    files, _ := os.ReadDir(dir)
+    for _, file := range files {
+        if !strings.HasSuffix(file.Name(), ".json") {
+            continue
+        }
+        lang := strings.TrimSuffix(file.Name(), ".json")
+        data, _ := os.ReadFile(filepath.Join(dir, file.Name()))
+        var t map[string]string
+        json.Unmarshal(data, &t)
+        translations[lang] = t
+    }
+    return translations
+}
+```
+
+In `main()`, load translations and register the globals/functions:
+
+```go
+translations := loadTranslations("translations")
+
+r.Use(
+    // Detect language from Accept-Language header
+    dave.Global("lang", func(render *dave.Render) any {
+        acceptLang := render.Request().Header.Get("Accept-Language")
+        if strings.HasPrefix(acceptLang, "de") {
+            return "de"
+        }
+        return "en"
+    }),
+
+    // i18n function looks up translations using the detected language
+    dave.Func("t", func(render *dave.Render) any {
+        return func(key string) string {
+            lang := render.Globals()["lang"].(string)
+            if t, ok := translations[lang]; ok {
+                if val, ok := t[key]; ok {
+                    return val
+                }
+            }
+            return key // Return key if translation not found
+        }
+    }),
+
+    // ... rest of your config
+)
+```
+
+Now update your templates to use translations. For example, `templates/users/index.tmpl`:
+
+```html
+<h1 class="text-2xl font-bold mb-6">{{t "users"}}</h1>
+
+<div class="grid gap-4">
+  <div class="bg-white rounded-lg shadow p-6">
+    <h2 class="text-xl font-semibold mb-4">{{t "new_user"}}</h2>
+    <form hx-post="/users" hx-vals='{"d_form_handler": "createUser"}'>
+      <div class="space-y-4">
+        <div>
+          <label class="block text-sm font-medium mb-1">{{t "name"}}</label>
+          <input
+            type="text"
+            name="name"
+            class="w-full border rounded px-3 py-2"
+          />
+        </div>
+        <div>
+          <label class="block text-sm font-medium mb-1">{{t "email"}}</label>
+          <input
+            type="email"
+            name="email"
+            class="w-full border rounded px-3 py-2"
+          />
+        </div>
+        <div>
+          <label class="block text-sm font-medium mb-1">{{t "birthday"}}</label>
+          <input
+            type="date"
+            name="birthday"
+            class="w-full border rounded px-3 py-2"
+          />
+        </div>
+        <button
+          type="submit"
+          class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700"
+        >
+          {{t "create"}}
+        </button>
+      </div>
+    </form>
+  </div>
+
+  {{range .globals.users.All}}
+  <a href="/users/{{.ID}}" class="block">
+    {{template "components/user-card" .}}
+  </a>
+  {{else}}
+  <p class="text-gray-500">No users yet.</p>
+  {{end}}
+</div>
+```
+
+And update `templates/components/user-card.tmpl`:
+
+```html
+<div class="bg-white rounded-lg shadow p-6">
+  <h2 class="text-xl font-semibold">{{.Name}}</h2>
+  <p class="text-gray-600">{{.Email}}</p>
+  <p class="text-gray-400 text-sm mt-2">
+    {{t "joined"}}: {{.CreatedAt | formatDate}}
+  </p>
+</div>
+```
+
+Test it by setting your browser's language preference to German, or by adding a header:
+
+```bash
+curl -H "Accept-Language: de" http://localhost:8080/users
+```
+
+The page now displays in German. This pattern demonstrates how globals (for request-scoped state like detected language) and template functions (for transforming data) can work together to build powerful features.
+
 ## Next Steps
 
 You've learned Dave's core features:
@@ -914,9 +1089,10 @@ You've learned Dave's core features:
 - **FormResponse** - Handle validation and preserve form state
 - **Layout resolvers** - Dynamically choose layouts (great for HTMX)
 - **Error handling** - Return proper errors with fallback templates
+- **i18n** - Internationalization using globals + functions
 
-Explore more in the [README](../README.md):
+Explore more in the [API Reference](reference.md):
 
-- [Configuration options](../README.md#configuration)
-- [D-TEMPLATE header](../README.md#headers-reference) for rendering alternative templates
-- [Advanced API](../README.md#advanced-api) for accessing render context
+- [Configuration options](reference.md#configuration)
+- [Headers](reference.md#headers) for overriding templates and layouts
+- [Advanced API](reference.md#advanced-api) for accessing render context

@@ -2,30 +2,25 @@
 
 A file-based router for Go, built for HTMX applications.
 
-Dave maps URL paths to template files automatically. No route definitions needed—just organize your `.tmpl` files in directories.
+**No route definitions needed**—just organize your `.tmpl` files in directories and Dave handles the rest.
 
-## Table of Contents
+```
+templates/
+├── index.tmpl           → /
+├── about.tmpl           → /about
+└── users/
+    ├── index.tmpl       → /users
+    └── {id}/
+        └── index.tmpl   → /users/123  (id = "123")
+```
 
-- [Quick Start](#quick-start)
-- [Globals](#globals)
-- [Form Handling](#form-handling)
-- [Layouts](#layouts)
-- [Components](#components-aka-go-templates)
-- [Template Functions](#template-functions)
-- [Configuration](#configuration)
-- [Error Handling](#error-handling)
-- [Request Lifecycle](#request-lifecycle)
-- [Template Priority](#template-priority)
-- [Headers Reference](#headers-reference)
-- [Developer Experience](#developer-experience)
-- [Advanced API](#advanced-api)
-- [Template Data Reference](#template-data-reference)
-
-## Quick Start
+## Installation
 
 ```bash
 go get github.com/rhilliges/dave
 ```
+
+## Quick Start
 
 ```go
 package main
@@ -33,13 +28,11 @@ package main
 import (
     "net/http"
     "os"
-
     "github.com/rhilliges/dave"
 )
 
 func main() {
-    fs := os.DirFS("templates")
-    r := dave.NewRouter(fs)
+    r := dave.NewRouter(os.DirFS("templates"))
     http.ListenAndServe(":8080", r)
 }
 ```
@@ -49,156 +42,19 @@ Create `templates/index.tmpl`:
 ```html
 <!DOCTYPE html>
 <html>
-  <head>
-    <title>Welcome</title>
-  </head>
   <body>
     <h1>Hello, Dave!</h1>
   </body>
 </html>
 ```
 
-Visit `http://localhost:8080/` to see your page.
+Visit `http://localhost:8080/` — that's it!
 
-## Globals
+## Core Concepts
 
-To share data and services across all templates, we can use Globals. They're evaluated on every request and have access to the request and render context.
+### Layouts
 
-```go
-r.Use(
-    // Data providers with request access
-    dave.Global("currentUser", func(render *dave.Render) any {
-        token := render.Request().Header.Get("Authorization")
-        return auth.GetUserFromToken(token)
-    }),
-    dave.Global("config", func(render *dave.Render) any {
-        return appConfig
-    }),
-
-    // Inject services for templates and handlers
-    dave.Global("userService", func(render *dave.Render) any {
-        return &UserService{db: db}
-    }),
-)
-```
-
-Access in templates: `{{.globals.currentUser.Name}}`, `{{.globals.config.AppName}}`
-
-Access in handlers (see next section):
-
-```go
-userService := dave.GlobalValue(r, "userService").(*UserService)
-```
-
-**When to use:**
-
-- Data needed on most pages (current user, navigation, permissions, configuration)
-- Services that handlers or templates need to access
-
-## Form Handling
-
-Form handlers process form submissions and return data for templates. Register them with `dave.FormHandler()` and specify which HTTP methods they handle:
-
-```go
-r.Use(
-    dave.FormHandler("createUser",
-        dave.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
-            // Process POST request
-            return user, nil
-        }),
-    ),
-)
-```
-
-Trigger a handler by including `d_form_handler` input in your form:
-
-```html
-<form method="POST">
-  <input type="hidden" name="d_form_handler" value="createUser" />
-  <!-- form fields -->
-</form>
-```
-
-For simple handlers that just return data without validation, return any value directly. Use `FormResponse` when you need form state preservation and validation errors.
-
-### FormResponse
-
-Register form handler:
-
-```go
-dave.FormHandler("updateUser",
-        dave.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
-            form := dave.NewFormResponse()
-
-            // Preserve submitted values
-            form.State = r.Form
-            // or set explicitly
-            form.State["name"] = []string{r.FormValue("name")}
-            form.State["email"] = []string{r.FormValue("email")}
-
-            // Validate
-            if r.FormValue("name") == "" {
-                form.AddError("name", "Name is required")
-            }
-            if r.FormValue("email") == "" {
-                form.AddError("email", "Email is required")
-            }
-
-            if form.HasErrors() {
-                return form, nil // Re-render with errors
-            }
-
-            // Process valid submission
-            user, err := db.UpdateUser(r.FormValue("name"), r.FormValue("email"))
-            if err != nil {
-                return nil, dave.Unexpected(err)
-            }
-
-            form.Result = user
-            return form, nil
-        }),
-    )
-```
-
-Return `dave.FormResponse` to handle form validation and preserve form state across submissions:
-
-When returning `*FormResponse`:
-
-- `{{.form}}` is populated with the FormResponse
-- `{{.result}}` shorthand for `FormResponse.Result`
-
-When returning any other type:
-
-- `{{.result}}` contains the raw return value
-- `{{.form}}` is nil
-
-### Template Usage
-
-When a handler returns `*dave.FormResponse`, these methods are available in templates:
-
-| Method                          | Returns    | Description                         |
-| ------------------------------- | ---------- | ----------------------------------- |
-| `{{.form.HasErrors}}`           | `bool`     | True if any validation errors exist |
-| `{{.form.HasError "field"}}`    | `bool`     | True if field has validation error  |
-| `{{.form.Errors "field"}}`      | `[]string` | Validation error messages for field |
-| `{{.form.Value "field" "def"}}` | `string`   | First value for field, or default   |
-| `{{.form.Values "field"}}`      | `[]string` | All values for field (multi-select) |
-| `{{.form.Result}}`              | `any`      | The result data (same as .result)   |
-
-### Form Parsing
-
-Dave automatically parses forms before calling handlers:
-
-- `application/x-www-form-urlencoded`: standard form parsing
-- `multipart/form-data`: parsed with configurable max size (default 32MB)
-
-Access form values via `r.FormValue("field")` or `r.Form`.
-
-## Layouts
-
-Layouts wrap page content with shared structure (headers, footers, navigation). Create layout files in `layouts/`:
-
-`templates/layouts/default.tmpl`:
+Wrap pages with shared structure. Create `templates/layouts/default.tmpl`:
 
 ```html
 <!DOCTYPE html>
@@ -209,57 +65,110 @@ Layouts wrap page content with shared structure (headers, footers, navigation). 
   <body>
     <nav><!-- navigation --></nav>
     <main>{{.content}}</main>
-    <footer><!-- footer --></footer>
   </body>
 </html>
 ```
 
-The `{{.content}}` placeholder is replaced with the rendered page template.
-The default layout (`layouts/default.tmpl`) is applied automatically if it exists. Configure a different default with `DefaultLayout` in [Configuration](#configuration).
+Page templates automatically render inside `{{.content}}`.
 
-### Layout Resolvers
+### Path Variables
 
-Dynamically choose layouts based on the request:
+Use `{name}` in directory names to capture URL segments:
+
+```
+templates/users/{id}/index.tmpl  →  /users/123
+```
+
+Access in templates: `{{.path_variables.id}}`
+
+### Globals
+
+Share data across all templates:
 
 ```go
 r.Use(
-    dave.LayoutResolver(func(r *http.Request) string {
-        // Skip layout for HTMX partial requests
-        if r.Header.Get("HX-Request") == "true" {
-            return "" // empty string = no layout
-        }
-        return "default"
+    dave.Global("currentUser", func(render *dave.Render) any {
+        token := render.Request().Header.Get("Authorization")
+        return auth.GetUser(token)
     }),
 )
 ```
 
-### Layout Priority
+Access in templates: `{{.globals.currentUser.Name}}`
 
-1. `D-LAYOUT` header (highest priority)
-2. Layout resolver function
-3. Default layout (`layouts/default.tmpl`)
+Register a service object with methods you can call from templates:
 
-If the resolved layout doesn't exist, the template renders without a layout.
-
-## Components (aka Go templates)
-
-Reference other templates:
-
-`templates/components/button.tmpl`:
-
-```html
-<button class="btn">{{.}}</button>
+```go
+r.Use(
+    dave.Global("users", func(render *dave.Render) any {
+        return userService  // has Get(id), All(), etc.
+    }),
+ )
 ```
 
-`templates/posts/index.tmpl`:
-
 ```html
-{{template "components/button" "Click Me"}}
+{{with .globals.users.Get .path_variables.id}}
+<h1>{{.Name}}</h1>
+<p>{{.Email}}</p>
+{{end}}
 ```
 
-## Template Functions
+Or access path variables to load data for the current page:
 
-Template functions have access to the render context via `Func`. Pass a factory function that receives `*Render` and returns the template function:
+```go
+r.Use(
+    dave.Global("user", func(render *dave.Render) any {
+        id := render.PathVariables()["id"]
+        if id == "" {
+            return nil
+        }
+        return db.GetUser(id)
+    }),
+)
+```
+
+Then in `templates/users/{id}/index.tmpl`:
+
+```html
+{{with .globals.user}}
+<h1>{{.Name}}</h1>
+<p>{{.Email}}</p>
+{{else}}
+<p>User not found</p>
+{{end}}
+```
+
+### Form Handlers
+
+Process form submissions:
+
+```go
+r.Use(
+    dave.FormHandler("createPost",
+        dave.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
+            title := r.FormValue("title")
+            post := db.CreatePost(title)
+            return post, nil
+        }),
+    ),
+)
+```
+
+Trigger with a hidden input:
+
+```html
+<form method="POST">
+  <input type="hidden" name="d_form_handler" value="createPost" />
+  <input name="title" placeholder="Post title" />
+  <button type="submit">Create</button>
+</form>
+```
+
+Handler results are available as `{{.result}}` in templates.
+
+### Template Functions
+
+Add custom functions:
 
 ```go
 r.Use(
@@ -268,386 +177,94 @@ r.Use(
             return strings.ToUpper(s)
         }
     }),
-    dave.Func("formatMoney", func(render *dave.Render) any {
-        return func(cents int) string {
-            return fmt.Sprintf("$%.2f", float64(cents)/100)
-        }
-    }),
 )
 ```
 
-Use in templates:
+Use in templates: `{{upper .user.Name}}`
+
+### Components
+
+Reuse templates with Go's built-in `{{template}}`:
 
 ```html
-<p>{{upper .user.Name}}</p>
-<p>Total: {{formatMoney .order.TotalCents}}</p>
+<!-- templates/components/button.tmpl -->
+<button class="btn">{{.}}</button>
+
+<!-- templates/posts/index.tmpl -->
+{{template "components/button" "Click Me"}}
 ```
 
-<details>
-<summary><strong>i18n Example</strong></summary>
+## HTMX Integration
+
+Dave works great with HTMX. Use a layout resolver to skip layouts for partial requests:
 
 ```go
-// main.go
-type Translations map[string]map[string]string // lang -> key -> value
-
-func loadTranslations(dir string) Translations {
-    translations := make(Translations)
-    files, _ := os.ReadDir(dir)
-    for _, file := range files {
-        lang := strings.TrimSuffix(file.Name(), ".json")
-        data, _ := os.ReadFile(filepath.Join(dir, file.Name()))
-        var t map[string]string
-        json.Unmarshal(data, &t)
-        translations[lang] = t
-    }
-    return translations
-}
-
-translations := loadTranslations("translations")
-
-// Global that detects language from Accept-Language header
 r.Use(
-    dave.Global("lang", func(render *dave.Render) any {
-        acceptLang := render.Request().Header.Get("Accept-Language")
-        if strings.HasPrefix(acceptLang, "de") {
-            return "de"
+    dave.LayoutResolver(func(r *http.Request) string {
+        if r.Header.Get("HX-Request") == "true" {
+            return "" // No layout for HTMX
         }
-        return "en"
-    }),
-)
-
-// i18n function reads language from render context
-r.Use(
-    dave.Func("i18n", func(render *dave.Render) any {
-        return func(key string) string {
-            lang := render.Globals()["lang"].(string)
-            if t, ok := translations[lang]; ok {
-                if val, ok := t[key]; ok {
-                    return val
-                }
-            }
-            return key
-        }
+        return "default"
     }),
 )
 ```
 
-Template usage:
+Redirect after form submission:
 
-```html
-<h1>{{i18n "welcome_message"}}</h1>
+```go
+dave.FormHandler("createUser",
+    dave.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
+        user := db.CreateUser(r.FormValue("name"))
+        w.Header().Set("HX-Location", "/users/"+user.ID)
+        return user, nil
+    }),
+)
 ```
 
-</details>
+## Error Handling
+
+Return typed errors for proper HTTP status codes:
+
+```go
+// 404 - renders fallback/not_found.tmpl
+return nil, dave.NotFound(fmt.Errorf("user not found"))
+
+// 500 - renders fallback/unexpected_error.tmpl
+return nil, dave.Unexpected(err)
+```
+
+Create custom error pages in `templates/fallback/`.
 
 ## Configuration
 
 ```go
 r.Use(
     dave.Config(&dave.Conf{
-        DevMode:           true,        // Rescan templates on each request
-        DefaultLayout:     "main",      // Default: "default"
-        TemplateExtension: ".html",     // Default: ".tmpl"
-        MaxFormSize:       10 << 20,    // Default: 32MB
+        DevMode:           true,     // Reload templates on every request
+        DefaultLayout:     "main",   // Default: "default"
+        TemplateExtension: ".html",  // Default: ".tmpl"
+        MaxFormSize:       10 << 20, // Default: 32MB
     }),
 )
-```
-
-| Option              | Default     | Description                                                                                             |
-| ------------------- | ----------- | ------------------------------------------------------------------------------------------------------- |
-| `DevMode`           | `false`     | When true, templates are rescanned on every request. Disable in production for performance.             |
-| `DefaultLayout`     | `"default"` | Name of the layout applied when none is specified. Set to empty string to disable default layouts.      |
-| `TemplateExtension` | `".tmpl"`   | File extension used when scanning for template files.                                                   |
-| `MaxFormSize`       | `32MB`      | Maximum size for `multipart/form-data` uploads. Uses Go's bit-shift notation (e.g., `10 << 20` = 10MB). |
-
-## Error Handling
-
-### Built-in Error Types
-
-Dave provides two error types that map to specific HTTP status codes and fallback templates:
-
-| Error Type             | HTTP Status | Fallback Template                |
-| ---------------------- | ----------- | -------------------------------- |
-| `dave.NotFound(err)`   | 404         | `fallback/not_found.tmpl`        |
-| `dave.Unexpected(err)` | 500         | `fallback/unexpected_error.tmpl` |
-
-```go
-// 404 - resource not found
-return nil, dave.NotFound(fmt.Errorf("user %s not found", id))
-
-// 500 - unexpected error (also logged automatically)
-return nil, dave.Unexpected(fmt.Errorf("database error: %w", err))
-```
-
-### Fallback Templates
-
-Create custom error pages:
-
-- `templates/fallback/not_found.tmpl` - for NotFound errors
-- `templates/fallback/unexpected_error.tmpl` - for Unexpected errors
-
-Error templates receive `{{.error}}` with the error message.
-
-### Logging
-
-Unexpected errors are logged automatically. Each request gets a unique `request_id` for tracing. Use `dave.LoggerFromContext(r.Context())` to get a logger with the request ID:
-
-```go
-logger := dave.LoggerFromContext(r.Context())
-logger.Info("processing request", "user_id", userID)
-```
-
-### Response Writer Rules
-
-Handlers should only set headers and status codes—let Dave render the template. Writing to the response body is logged as an error and the write is discarded.
-
-**What handlers can do:**
-
-- Set response headers: `w.Header().Set("HX-Location", "/users")`
-- Set status codes: `w.WriteHeader(http.StatusCreated)`
-- Return data for templates: `return user, nil`
-
-**What handlers should NOT do:**
-
-- Write to response body: `w.Write([]byte("..."))` (will be logged as error)
-
-Handler return values are accessible in templates via `{{.result}}`:
-
-```html
-<!-- If handler returns a Post struct -->
-<div class="p-4 border rounded">
-  <p class="font-bold">{{.result.Title}}</p>
-  <p>{{.result.Body}}</p>
-</div>
-```
-
-## Request Lifecycle
-
-Every request flows through these stages:
-
-1. **Parse request path** - Extract the URL path from the request
-2. **Match template** - Find the best matching template file, extracting path variables (e.g., `/posts/123` matches `posts/{id}/index.tmpl` with `id = "123"`)
-3. **Resolve template name** - Check `D-TEMPLATE` header or default to `index`
-4. **Resolve layout** - Priority: `D-LAYOUT` header → layout resolver → default layout
-5. **Evaluate globals** - Call all registered global functions to populate `{{.globals}}`
-6. **Parse form data** - Automatically parse `application/x-www-form-urlencoded` or `multipart/form-data`
-7. **Execute form handler** - If `d_form_handler` is specified, run the matching handler for the HTTP method (use `dave.GlobalValue()` and `dave.PathVariable()` helpers)
-8. **Build template data** - Assemble `path_variables`, `globals`, `result`, `form` (if FormResponse), and `error` into the template context
-9. **Render template** - Execute the matched template with the assembled data
-10. **Wrap in layout** - If a layout was resolved and exists, render it with `{{.content}}` containing the template output
-
-## Template Priority
-
-When multiple templates could match a path, explicit paths take precedence over path variables:
-
-```
-/users/new     → users/new/index.tmpl      (explicit match)
-/users/123     → users/{id}/index.tmpl     (path variable)
-/users/456/posts/latest → users/{id}/posts/latest/index.tmpl
-/users/456/posts/789    → users/{id}/posts/{postId}/index.tmpl
-```
-
-## Headers Reference
-
-| Header       | Purpose                                       |
-| ------------ | --------------------------------------------- |
-| `D-TEMPLATE` | Override the template name (default: `index`) |
-| `D-LAYOUT`   | Override the layout                           |
-
-## Developer Experience
-
-### Dev Mode
-
-When `DevMode: true`:
-
-- Templates are rescanned on every request
-- Changes to templates are reflected immediately without restart
-
-### Auto-Reload with mise + Air
-
-Use [mise](https://mise.jdx.dev) to manage tools and run the dev server with live reload:
-
-```bash
-mise install    # Install Go and Air
-mise run dev    # Start dev server with live reload
-```
-
-The project includes `mise.toml` (tool definitions and tasks) and `.air.toml` (Air configuration). Air watches for Go file changes and automatically rebuilds/restarts the server.
-
-With `DevMode: true`, template changes reload instantly without recompiling Go code.
-
-## Advanced API
-
-### Accessing Request Context
-
-Use the shorthand helpers for common access patterns:
-
-```go
-dave.FormHandler("example",
-    dave.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
-        // Access path variables
-        id := dave.PathVariable(r, "id").(string)
-
-        // Access globals
-        userService := dave.GlobalValue(r, "userService").(*UserService)
-
-        return result, nil
-    }),
-)
-```
-
-For full access to the render context, use `dave.GetRender()`:
-
-```go
-render := dave.GetRender(r.Context())
-template := render.Template()
-layout := render.Layout()
-pathVars := render.PathVariables()
-globals := render.Globals()
-```
-
-### Render Type Methods
-
-| Method            | Returns             | Description                                                 |
-| ----------------- | ------------------- | ----------------------------------------------------------- |
-| `Template()`      | `string`            | The resolved template name                                  |
-| `PathVariables()` | `map[string]string` | Extracted path variables                                    |
-| `Layout()`        | `string`            | The resolved layout name                                    |
-| `Globals()`       | `map[string]any`    | Evaluated global values                                     |
-| `HandlerResult()` | `any`               | Raw return value from handler                               |
-| `FormResponse()`  | `*FormResponse`     | Convenience: `HandlerResult()` cast to FormResponse, or nil |
-
-### Path Variable Access
-
-Access path variables in handlers using `dave.PathVariable()`:
-
-```go
-id := dave.PathVariable(r, "id").(string)
-```
-
-### All HTTP Method Handlers
-
-```go
-dave.FormHandler("resource",
-        dave.Get(handler),     // GET requests
-        dave.Post(handler),    // POST requests
-        dave.Put(handler),     // PUT requests
-        dave.Patch(handler),   // PATCH requests
-        dave.Delete(handler),  // DELETE requests
-        dave.MethodHandler("OPTIONS", handler), // Custom method
-        )
-```
-
-### Manual Template Scanning
-
-Templates are scanned lazily on the first request. To scan templates at startup (e.g., to catch errors early or warm up before serving traffic), call `ScanTemplates()` manually:
-
-```go
-func main() {
-    fs := os.DirFS("templates")
-    r := dave.NewRouter(fs)
-
-    // Scan templates at startup
-    if err := r.ScanTemplates(); err != nil {
-        log.Fatal(err)
-    }
-
-    http.ListenAndServe(":8080", r)
-}
 ```
 
 ## Template Data Reference
 
-Data available in templates:
+| Variable                   | Description                           |
+| -------------------------- | ------------------------------------- |
+| `{{.globals.name}}`        | Global values                         |
+| `{{.path_variables.name}}` | URL path variables                    |
+| `{{.result}}`              | Form handler return value             |
+| `{{.form}}`                | Form state (when using FormResponse)  |
+| `{{.content}}`             | Page content (in layouts)             |
+| `{{.error}}`               | Error message (in fallback templates) |
 
-| Variable                     | Type            | Description                                                        |
-| ---------------------------- | --------------- | ------------------------------------------------------------------ |
-| `{{.globals.<name>}}`        | `any`           | Values from Global providers                                       |
-| `{{.path_variables.<name>}}` | `string`        | Extracted URL path variables                                       |
-| `{{.result}}`                | `any`           | Return value from handler (or `FormResponse.Result`)               |
-| `{{.form}}`                  | `*FormResponse` | Form state and validation errors (if handler returns FormResponse) |
-| `{{.error}}`                 | `string`        | Error message (in fallback templates)                              |
-| `{{.content}}`               | `string`        | Page content (in layout templates)                                 |
+## Learn More
 
-<details>
-<summary><strong>Function-Based Access (Alternative)</strong></summary>
+- **[Tutorial](docs/tutorial.md)** — Build a complete app step-by-step
+- **[API Reference](docs/reference.md)** — Complete API documentation
+- **[HTMX](https://htmx.org)** — High power tools for HTML
 
-If you prefer accessing data via template functions instead of dot-notation, you can implement your own accessor functions. This can also be helpful when debugging:
+## License
 
-```go
-r.Use(
-    dave.Func("var", func(render *dave.Render) any {
-        return func(name string) string {
-            logger := dave.LoggerFromContext(render.Request().Context())
-            val := render.PathVariables()[name]
-            logger.Debug("path variable accessed", "name", name, "value", val)
-            return val
-        }
-    }),
-    dave.Func("global", func(render *dave.Render) any {
-        return func(name string) any {
-            logger := dave.LoggerFromContext(render.Request().Context())
-            val := render.Globals()[name]
-            logger.Debug("global accessed", "name", name, "value", val)
-            return val
-        }
-    }),
-    dave.Func("form", func(render *dave.Render) any {
-        return func() *dave.FormResponse {
-            logger := dave.LoggerFromContext(render.Request().Context())
-            form := render.FormResponse()
-            logger.Debug("form accessed", "hasForm", form != nil)
-            return form
-        }
-    }),
-    dave.Func("field", func(render *dave.Render) any {
-        return func(form *dave.FormResponse, name string) string {
-            logger := dave.LoggerFromContext(render.Request().Context())
-            if form == nil {
-                logger.Debug("field accessed (no form)", "name", name)
-                return ""
-            }
-            val := form.Value(name, "")
-            logger.Debug("field accessed", "name", name, "value", val)
-            return val
-        }
-    }),
-    dave.Func("error", func(render *dave.Render) any {
-        return func(form *dave.FormResponse, name string) []string {
-            logger := dave.LoggerFromContext(render.Request().Context())
-            if form == nil {
-                logger.Debug("error accessed (no form)", "name", name)
-                return nil
-            }
-            errs := form.Errors(name)
-            logger.Debug("error accessed", "name", name, "errors", errs)
-            return errs
-        }
-    }),
-)
-```
-
-Then use in templates:
-
-```html
-<!-- Instead of {{.path_variables.id}} -->
-{{var "id"}}
-
-<!-- Instead of {{.globals.currentUser}} -->
-{{global "currentUser"}}
-
-<!-- Instead of {{.form.Value "email" ""}} -->
-{{form | field "email"}}
-
-<!-- Instead of {{.form.Errors "email"}} -->
-{{form | error "email"}}
-```
-
-</details>
-
-## Helpful Links
-
-- [HTMX](https://htmx.org) - High power tools for HTML
-- [HTMX Examples](https://htmx.org/examples/) - Implementation patterns
-- [Hyperscript](https://hyperscript.org) - Client-side scripting
-- [Alpine.js](https://alpinejs.dev) - Lightweight JS framework
+MIT
