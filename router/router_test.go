@@ -1250,7 +1250,7 @@ func TestRouter_FormResponse_ExposedAsFormInTemplateContext(t *testing.T) {
 	assert.Equal(t, "hasErrors:true,name:Jane,error:name should not be Jane", string(body))
 }
 
-func TestRouter_FormResponse_ResultExposedAsHandlerResult(t *testing.T) {
+func TestRouter_FormHandler_WithFormResponse(t *testing.T) {
 	templates := []testTemplate{
 		{"path/to/index.tmpl", "result:{{.result.ID}},formResult:{{.form.Result.ID}}"},
 	}
@@ -1289,9 +1289,7 @@ func TestRouter_FormResponse_ResultExposedAsHandlerResult(t *testing.T) {
 	assert.Equal(t, "result:123,formResult:123", string(body))
 }
 
-func TestRouter_FormResponse_NonFormResponseStillWorksAsHandlerResult(t *testing.T) {
-	// Ensure backward compatibility - when handler returns non-FormResponse,
-	// .result should still work as before, and .form should be nil
+func TestRouter_FormHandler_NonFormResponse(t *testing.T) {
 	templates := []testTemplate{
 		{"path/to/index.tmpl", "result:{{.result}},formNil:{{if .form}}notnil{{else}}nil{{end}}"},
 	}

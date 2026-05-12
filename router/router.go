@@ -34,12 +34,12 @@ type Router struct {
 }
 
 type Render struct {
-	request        *http.Request
-	template       string
-	pathVariables  map[string]string
-	globals        map[string]any
-	resolvedValues map[string]any
-	layout         string
+	request       *http.Request
+	template      string
+	pathVariables map[string]string
+	globals       map[string]any
+	handlerResult map[string]any
+	layout        string
 }
 
 func (r *Render) Request() *http.Request {
@@ -56,10 +56,6 @@ func (r *Render) PathVariables() map[string]string {
 
 func (r *Render) Layout() string {
 	return r.layout
-}
-
-func (r *Render) ResolvedValues() map[string]any {
-	return r.resolvedValues
 }
 
 func (r *Render) Globals() map[string]any {
@@ -238,7 +234,7 @@ func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	data = render.resolvedValues
+	data = render.handlerResult
 	data["globals"] = render.globals
 	data["path_variables"] = render.pathVariables
 	if render.layout == "" {
@@ -341,10 +337,10 @@ func (router *Router) getRender(w http.ResponseWriter, r *http.Request) (*Render
 	logger.Debug("creating render object")
 
 	render := &Render{
-		request:        r,
-		pathVariables:  make(map[string]string),
-		globals:        make(map[string]any),
-		resolvedValues: make(map[string]any),
+		request:       r,
+		pathVariables: make(map[string]string),
+		globals:       make(map[string]any),
+		handlerResult: make(map[string]any),
 	}
 
 	render.layout = r.Header.Get("D-LAYOUT")
@@ -423,10 +419,10 @@ func (router *Router) getRender(w http.ResponseWriter, r *http.Request) (*Render
 		}
 		logger.Info("form handler completed", "handler", formHandlerKey)
 		if formResponse, ok := val.(*FormResponse); ok {
-			render.resolvedValues["form"] = formResponse
-			render.resolvedValues["result"] = formResponse.Result
+			render.handlerResult["form"] = formResponse
+			render.handlerResult["result"] = formResponse.Result
 		} else {
-			render.resolvedValues["result"] = val
+			render.handlerResult["result"] = val
 		}
 	}
 

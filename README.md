@@ -110,26 +110,28 @@ router.FormHandler("updateUser",
             form := router.NewFormResponse()
 
             // Preserve submitted values
+            formResponse.State = r.Form
+            // or set explicitly
             form.State["name"] = []string{r.FormValue("name")}
             form.State["email"] = []string{r.FormValue("email")}
 
             // Validate
             if r.FormValue("name") == "" {
-            form.AddError("name", "Name is required")
+                form.AddError("name", "Name is required")
             }
             if r.FormValue("email") == "" {
-            form.AddError("email", "Email is required")
+                form.AddError("email", "Email is required")
             }
 
             if form.HasErrors() {
-            return form, nil // Re-render with errors
+                return form, nil // Re-render with errors
             }
 
             // Process valid submission
             user, err := db.UpdateUser(r.FormValue("name"), r.FormValue("email"))
-                    if err != nil {
-                        return nil, router.Unexpected(err)
-                    }
+            if err != nil {
+                return nil, router.Unexpected(err)
+            }
 
             form.Result = user
             return form, nil
@@ -265,7 +267,7 @@ Use in templates:
 Since `Func` has access to the render context, i18n becomes simple - the function can read the language from globals directly:
 
 ```go
-// translations.go
+// main.go
 type Translations map[string]map[string]string // lang -> key -> value
 
 func loadTranslations(dir string) Translations {
@@ -281,7 +283,6 @@ func loadTranslations(dir string) Translations {
     return translations
 }
 
-// main.go
 translations := loadTranslations("translations")
 
 // Global that detects language from Accept-Language header
@@ -478,13 +479,12 @@ globals := render.Globals()
 
 ### Render Type Methods
 
-| Method             | Returns             | Description                |
-| ------------------ | ------------------- | -------------------------- |
-| `Template()`       | `string`            | The resolved template name |
-| `PathVariables()`  | `map[string]string` | Extracted path variables   |
-| `Layout()`         | `string`            | The resolved layout name   |
-| `Globals()`        | `map[string]any`    | Evaluated global values    |
-| `ResolvedValues()` | `map[string]any`    | Handler return values      |
+| Method            | Returns             | Description                |
+| ----------------- | ------------------- | -------------------------- |
+| `Template()`      | `string`            | The resolved template name |
+| `PathVariables()` | `map[string]string` | Extracted path variables   |
+| `Layout()`        | `string`            | The resolved layout name   |
+| `Globals()`       | `map[string]any`    | Evaluated global values    |
 
 ### Path Variable Access
 
