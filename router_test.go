@@ -1,4 +1,4 @@
-package router
+package dave
 
 import (
 	"bytes"
@@ -51,15 +51,14 @@ import (
 // - utility func Global(name string)
 // - layout resolvers (HX-Request header example, D-LAYOUT default implementation)
 // - implement Form object
+// - fix i18n stuff
 
 // What to do next:
 // - change accessing path variables to just use template func
-// - fix i18n stuff
 // - custom fallback templates for e.g. auth errors
 // - dev experience (caching, scanTemplates)
 // - clone root templates before rendering
-// - figure out middlewares
-// - how to integrate middleware? (authentication, authorization)
+// - figure out middlewares/how to integrate middleware? (authentication, authorization)
 // - register path resolvers using reflection on the package path vs. a path variable - see if feasible
 // - custom renderer
 

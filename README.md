@@ -13,12 +13,12 @@ import (
     "net/http"
     "os"
 
-    "github.com/yourusername/dave/internal/router"
+    "github.com/rhilliges/dave"
 )
 
 func main() {
     fs := os.DirFS("templates")
-    r := router.NewRouter(fs)
+    r := dave.NewRouter(fs)
     http.ListenAndServe(":8080", r)
 }
 ```
@@ -46,16 +46,16 @@ Globals provide a way to share data and services across all templates. They're e
 ```go
 r.Use(
     // Data providers with request access
-    router.Global("currentUser", func(render *router.Render) any {
+    dave.Global("currentUser", func(render *dave.Render) any {
         token := render.Request().Header.Get("Authorization")
         return auth.GetUserFromToken(token)
     }),
-    router.Global("config", func(render *router.Render) any {
+    dave.Global("config", func(render *dave.Render) any {
         return appConfig
     }),
 
     // Access path variables
-    router.Global("userService", func(render *router.Render) any {
+    dave.Global("userService", func(render *dave.Render) any {
         return &UserService{db: db}
     }),
 )
@@ -66,7 +66,7 @@ Access in templates: `{{.globals.currentUser.Name}}`, `{{.globals.config.AppName
 Access in handlers (see next section):
 
 ```go
-userService := router.GlobalValue(r, "userService").(*UserService)
+userService := dave.GlobalValue(r, "userService").(*UserService)
 ```
 
 **When to use:**
@@ -76,12 +76,12 @@ userService := router.GlobalValue(r, "userService").(*UserService)
 
 ## Form Handling
 
-Form handlers process form submissions and return data for templates. Register them with `router.FormHandler()` and specify which HTTP methods they handle:
+Form handlers process form submissions and return data for templates. Register them with `dave.FormHandler()` and specify which HTTP methods they handle:
 
 ```go
 r.Use(
-    router.FormHandler("createUser",
-        router.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
+    dave.FormHandler("createUser",
+        dave.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
             // Process POST request
             return user, nil
         }),
@@ -105,9 +105,9 @@ For simple handlers that just return data without validation, return any value d
 Register form handler:
 
 ```go
-router.FormHandler("updateUser",
-        router.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
-            form := router.NewFormResponse()
+dave.FormHandler("updateUser",
+        dave.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
+            form := dave.NewFormResponse()
 
             // Preserve submitted values
             formResponse.State = r.Form
@@ -130,7 +130,7 @@ router.FormHandler("updateUser",
             // Process valid submission
             user, err := db.UpdateUser(r.FormValue("name"), r.FormValue("email"))
             if err != nil {
-                return nil, router.Unexpected(err)
+                return nil, dave.Unexpected(err)
             }
 
             form.Result = user
@@ -139,7 +139,7 @@ router.FormHandler("updateUser",
     )
 ```
 
-Return `router.FormResponse` to handle form validation and preserve form state across submissions:
+Return `dave.FormResponse` to handle form validation and preserve form state across submissions:
 
 When returning `*FormResponse`:
 
@@ -153,7 +153,7 @@ When returning any other type:
 
 ### Template Usage
 
-When a handler returns `*router.FormResponse`, these methods are available in templates:
+When a handler returns `*dave.FormResponse`, these methods are available in templates:
 
 | Method                          | Returns    | Description                         |
 | ------------------------------- | ---------- | ----------------------------------- |
@@ -202,7 +202,7 @@ Dynamically choose layouts based on the request:
 
 ```go
 r.Use(
-    router.LayoutResolver(func(r *http.Request) string {
+    dave.LayoutResolver(func(r *http.Request) string {
         // Skip layout for HTMX partial requests
         if r.Header.Get("HX-Request") == "true" {
             return "" // empty string = no layout
@@ -242,12 +242,12 @@ Template functions have access to the render context via `Func`. Pass a factory 
 
 ```go
 r.Use(
-    router.Func("upper", func(render *router.Render) any {
+    dave.Func("upper", func(render *dave.Render) any {
         return func(s string) string {
             return strings.ToUpper(s)
         }
     }),
-    router.Func("formatMoney", func(render *router.Render) any {
+    dave.Func("formatMoney", func(render *dave.Render) any {
         return func(cents int) string {
             return fmt.Sprintf("$%.2f", float64(cents)/100)
         }
@@ -287,7 +287,7 @@ translations := loadTranslations("translations")
 
 // Global that detects language from Accept-Language header
 r.Use(
-    router.Global("lang", func(render *router.Render) any {
+    dave.Global("lang", func(render *dave.Render) any {
         acceptLang := render.Request().Header.Get("Accept-Language")
         if strings.HasPrefix(acceptLang, "de") {
             return "de"
@@ -298,7 +298,7 @@ r.Use(
 
 // i18n function reads language from render context
 r.Use(
-    router.Func("i18n", func(render *router.Render) any {
+    dave.Func("i18n", func(render *dave.Render) any {
         return func(key string) string {
             lang := render.Globals()["lang"].(string)
             if t, ok := translations[lang]; ok {
@@ -322,7 +322,7 @@ Template usage - no need to pass language explicitly:
 
 ```go
 r.Use(
-    router.Config(&router.Conf{
+    dave.Config(&dave.Conf{
         DevMode:           true,        // Rescan templates on each request
         DefaultLayout:     "main",      // Default: "default"
         TemplateExtension: ".html",     // Default: ".tmpl"
@@ -337,17 +337,17 @@ r.Use(
 
 Dave provides two error types that map to specific HTTP status codes and fallback templates:
 
-| Error Type               | HTTP Status | Fallback Template                |
-| ------------------------ | ----------- | -------------------------------- |
-| `router.NotFound(err)`   | 404         | `fallback/not_found.tmpl`        |
-| `router.Unexpected(err)` | 500         | `fallback/unexpected_error.tmpl` |
+| Error Type             | HTTP Status | Fallback Template                |
+| ---------------------- | ----------- | -------------------------------- |
+| `dave.NotFound(err)`   | 404         | `fallback/not_found.tmpl`        |
+| `dave.Unexpected(err)` | 500         | `fallback/unexpected_error.tmpl` |
 
 ```go
 // 404 - resource not found
-return nil, router.NotFound(fmt.Errorf("user %s not found", id))
+return nil, dave.NotFound(fmt.Errorf("user %s not found", id))
 
 // 500 - unexpected error (also logged automatically)
-return nil, router.Unexpected(fmt.Errorf("database error: %w", err))
+return nil, dave.Unexpected(fmt.Errorf("database error: %w", err))
 ```
 
 ### Fallback Templates
@@ -361,10 +361,10 @@ Error templates receive `{{.error}}` with the error message.
 
 ### Logging
 
-Unexpected errors are logged automatically. Each request gets a unique `request_id` for tracing. Use `router.LoggerFromContext(r.Context())` to get a logger with the request ID:
+Unexpected errors are logged automatically. Each request gets a unique `request_id` for tracing. Use `dave.LoggerFromContext(r.Context())` to get a logger with the request ID:
 
 ```go
-logger := router.LoggerFromContext(r.Context())
+logger := dave.LoggerFromContext(r.Context())
 logger.Info("processing request", "user_id", userID)
 ```
 
@@ -402,7 +402,7 @@ Every request flows through these stages:
 4. **Resolve layout** - Priority: `D-LAYOUT` header → layout resolver → default layout
 5. **Evaluate globals** - Call all registered global functions to populate `{{.globals}}`
 6. **Parse form data** - Automatically parse `application/x-www-form-urlencoded` or `multipart/form-data`
-7. **Execute form handler** - If `d_form_handler` is specified, run the matching handler for the HTTP method (use `router.GlobalValue()` and `router.PathVariable()` helpers)
+7. **Execute form handler** - If `d_form_handler` is specified, run the matching handler for the HTTP method (use `dave.GlobalValue()` and `dave.PathVariable()` helpers)
 8. **Build template data** - Assemble `path_variables`, `globals`, `result`, `form` (if FormResponse), and `error` into the template context
 9. **Render template** - Execute the matched template with the assembled data
 10. **Wrap in layout** - If a layout was resolved and exists, render it with `{{.content}}` containing the template output
@@ -454,23 +454,23 @@ With `DevMode: true`, template changes reload instantly without recompiling Go c
 Use the shorthand helpers for common access patterns:
 
 ```go
-router.FormHandler("example",
-    router.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
+dave.FormHandler("example",
+    dave.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
         // Access path variables
-        id := router.PathVariable(r, "id").(string)
+        id := dave.PathVariable(r, "id").(string)
 
         // Access globals
-        userService := router.GlobalValue(r, "userService").(*UserService)
+        userService := dave.GlobalValue(r, "userService").(*UserService)
 
         return result, nil
     }),
 )
 ```
 
-For full access to the render context, use `router.GetRender()`:
+For full access to the render context, use `dave.GetRender()`:
 
 ```go
-render := router.GetRender(r.Context())
+render := dave.GetRender(r.Context())
 template := render.Template()
 layout := render.Layout()
 pathVars := render.PathVariables()
@@ -488,10 +488,10 @@ globals := render.Globals()
 
 ### Path Variable Access
 
-Access path variables in handlers using `router.PathVariable()`:
+Access path variables in handlers using `dave.PathVariable()`:
 
 ```go
-id := router.PathVariable(r, "id").(string)
+id := dave.PathVariable(r, "id").(string)
 ```
 
 ### Manual Template Scanning
@@ -507,13 +507,13 @@ if err := r.ScanTemplates(); err != nil {
 ### All HTTP Method Handlers
 
 ```go
-router.FormHandler("resource",
-    router.Get(handler),     // GET requests
-    router.Post(handler),    // POST requests
-    router.Put(handler),     // PUT requests
-    router.Patch(handler),   // PATCH requests
-    router.Delete(handler),  // DELETE requests
-    router.MethodHandler("OPTIONS", handler), // Custom method
+dave.FormHandler("resource",
+    dave.Get(handler),     // GET requests
+    dave.Post(handler),    // POST requests
+    dave.Put(handler),     // PUT requests
+    dave.Patch(handler),   // PATCH requests
+    dave.Delete(handler),  // DELETE requests
+    dave.MethodHandler("OPTIONS", handler), // Custom method
 )
 ```
 
