@@ -479,12 +479,14 @@ globals := render.Globals()
 
 ### Render Type Methods
 
-| Method            | Returns             | Description                |
-| ----------------- | ------------------- | -------------------------- |
-| `Template()`      | `string`            | The resolved template name |
-| `PathVariables()` | `map[string]string` | Extracted path variables   |
-| `Layout()`        | `string`            | The resolved layout name   |
-| `Globals()`       | `map[string]any`    | Evaluated global values    |
+| Method            | Returns             | Description                                                 |
+| ----------------- | ------------------- | ----------------------------------------------------------- |
+| `Template()`      | `string`            | The resolved template name                                  |
+| `PathVariables()` | `map[string]string` | Extracted path variables                                    |
+| `Layout()`        | `string`            | The resolved layout name                                    |
+| `Globals()`       | `map[string]any`    | Evaluated global values                                     |
+| `HandlerResult()` | `any`               | Raw return value from handler                               |
+| `FormResponse()`  | `*FormResponse`     | Convenience: `HandlerResult()` cast to FormResponse, or nil |
 
 ### Path Variable Access
 
@@ -495,6 +497,8 @@ id := dave.PathVariable(r, "id").(string)
 ```
 
 ### Manual Template Scanning
+
+TODO: document force scan on startup before the first request coming in.
 
 Force a template rescan (useful for testing or custom reload logic):
 
@@ -529,6 +533,79 @@ Data available in templates:
 | `{{.form}}`                  | `*FormResponse` | Form state and validation errors (if handler returns FormResponse) |
 | `{{.error}}`                 | `string`        | Error message (in fallback templates)                              |
 | `{{.content}}`               | `string`        | Page content (in layout templates)                                 |
+
+### Function-Based Access (Alternative)
+
+If you prefer accessing data via template functions instead of dot-notation, you can implement your own accessor functions. This can also be helpful when debugging:
+
+```go
+r.Use(
+    dave.Func("var", func(render *dave.Render) any {
+        return func(name string) string {
+            logger := dave.LoggerFromContext(render.Request().Context())
+            val := render.PathVariables()[name]
+            logger.Debug("path variable accessed", "name", name, "value", val)
+            return val
+        }
+    }),
+    dave.Func("global", func(render *dave.Render) any {
+        return func(name string) any {
+            logger := dave.LoggerFromContext(render.Request().Context())
+            val := render.Globals()[name]
+            logger.Debug("global accessed", "name", name, "value", val)
+            return val
+        }
+    }),
+    dave.Func("form", func(render *dave.Render) any {
+        return func() *dave.FormResponse {
+            logger := dave.LoggerFromContext(render.Request().Context())
+            form := render.FormResponse()
+            logger.Debug("form accessed", "hasForm", form != nil)
+            return form
+        }
+    }),
+    dave.Func("field", func(render *dave.Render) any {
+        return func(form *dave.FormResponse, name string) string {
+            logger := dave.LoggerFromContext(render.Request().Context())
+            if form == nil {
+                logger.Debug("field accessed (no form)", "name", name)
+                return ""
+            }
+            val := form.Value(name, "")
+            logger.Debug("field accessed", "name", name, "value", val)
+            return val
+        }
+    }),
+    dave.Func("error", func(render *dave.Render) any {
+        return func(form *dave.FormResponse, name string) []string {
+            logger := dave.LoggerFromContext(render.Request().Context())
+            if form == nil {
+                logger.Debug("error accessed (no form)", "name", name)
+                return nil
+            }
+            errs := form.Errors(name)
+            logger.Debug("error accessed", "name", name, "errors", errs)
+            return errs
+        }
+    }),
+)
+```
+
+Then use in templates:
+
+```html
+<!-- Instead of {{.path_variables.id}} -->
+{{var "id"}}
+
+<!-- Instead of {{.globals.currentUser}} -->
+{{global "currentUser"}}
+
+<!-- Instead of {{.form.Value "email" ""}} -->
+{{form | field "email"}}
+
+<!-- Instead of {{.form.Errors "email"}} -->
+{{form | error "email"}}
+```
 
 ## Helpful Links
 

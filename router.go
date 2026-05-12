@@ -38,7 +38,7 @@ type Render struct {
 	template      string
 	pathVariables map[string]string
 	globals       map[string]any
-	handlerResult map[string]any
+	handlerResult any
 	layout        string
 }
 
@@ -60,6 +60,17 @@ func (r *Render) Layout() string {
 
 func (r *Render) Globals() map[string]any {
 	return r.globals
+}
+
+func (r *Render) HandlerResult() any {
+	return r.handlerResult
+}
+
+func (r *Render) FormResponse() *FormResponse {
+	if formResponse, ok := r.handlerResult.(*FormResponse); ok {
+		return formResponse
+	}
+	return nil
 }
 
 type requestContextKey struct{}
@@ -234,7 +245,12 @@ func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	data = render.handlerResult
+	if formResponse, ok := render.handlerResult.(*FormResponse); ok {
+		data["form"] = formResponse
+		data["result"] = formResponse.Result
+	} else {
+		data["result"] = render.handlerResult
+	}
 	data["globals"] = render.globals
 	data["path_variables"] = render.pathVariables
 	if render.layout == "" {
@@ -340,7 +356,7 @@ func (router *Router) getRender(w http.ResponseWriter, r *http.Request) (*Render
 		request:       r,
 		pathVariables: make(map[string]string),
 		globals:       make(map[string]any),
-		handlerResult: make(map[string]any),
+		handlerResult: &FormResponse{},
 	}
 
 	render.layout = r.Header.Get("D-LAYOUT")
@@ -418,12 +434,7 @@ func (router *Router) getRender(w http.ResponseWriter, r *http.Request) (*Render
 			return nil, err
 		}
 		logger.Info("form handler completed", "handler", formHandlerKey)
-		if formResponse, ok := val.(*FormResponse); ok {
-			render.handlerResult["form"] = formResponse
-			render.handlerResult["result"] = formResponse.Result
-		} else {
-			render.handlerResult["result"] = val
-		}
+		render.handlerResult = val
 	}
 
 	return render, nil
