@@ -130,6 +130,24 @@ func TestRouter(t *testing.T) {
 	}
 }
 
+func TestRouter_RootPathRendersIndexTemplate(t *testing.T) {
+	templates := []testTemplate{
+		{"index.tmpl", "root-index"},
+	}
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
+	req := httptest.NewRequest("GET", "/", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	resp := rec.Result()
+	body, _ := io.ReadAll(resp.Body)
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "root-index", string(body))
+}
+
 func TestRouter_ReferencingAnotherTemplate(t *testing.T) {
 	templates := []testTemplate{
 		{"path/to/another/template.tmpl", "T1"},
@@ -176,10 +194,10 @@ func TestRouter_UseGlobals(t *testing.T) {
 	rec := httptest.NewRecorder()
 
 	router.Use(
-		Global("global1", func() any {
+		Global("global1", func(render *Render) any {
 			return "value1"
 		}),
-		Global("global2", func() any {
+		Global("global2", func(render *Render) any {
 			return "value2"
 		}),
 	)
@@ -191,7 +209,90 @@ func TestRouter_UseGlobals(t *testing.T) {
 	assert.Equal(t, "value1,value2", string(body))
 }
 
-func TestRouter_UseGlobalFunctions(t *testing.T) {
+func TestRouter_GlobalsCanAccessRequest(t *testing.T) {
+	templates := []testTemplate{
+		{"v1/index.tmpl", "{{.globals.lang}}"},
+	}
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
+	router.Use(
+		Global("lang", func(render *Render) any {
+			acceptLang := render.Request().Header.Get("Accept-Language")
+			if strings.HasPrefix(acceptLang, "de") {
+				return "de"
+			}
+			return "en"
+		}),
+	)
+
+	// Test with German language
+	req := httptest.NewRequest("GET", "/v1", nil)
+	req.Header.Set("Accept-Language", "de-DE,de;q=0.9")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	resp := rec.Result()
+	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, "de", string(body))
+
+	// Test with English language
+	req2 := httptest.NewRequest("GET", "/v1", nil)
+	req2.Header.Set("Accept-Language", "en-US,en;q=0.9")
+	rec2 := httptest.NewRecorder()
+	router.ServeHTTP(rec2, req2)
+	resp2 := rec2.Result()
+	body2, _ := io.ReadAll(resp2.Body)
+	assert.Equal(t, "en", string(body2))
+}
+
+func TestRouter_GlobalsCanAccessPathVariables(t *testing.T) {
+	templates := []testTemplate{
+		{"users/{id}/index.tmpl", "{{.globals.userGreeting}}"},
+	}
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
+	router.Use(
+		Global("userGreeting", func(render *Render) any {
+			id := render.PathVariables()["id"]
+			return fmt.Sprintf("Hello user %s", id)
+		}),
+	)
+
+	req := httptest.NewRequest("GET", "/users/42", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	resp := rec.Result()
+	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, "Hello user 42", string(body))
+}
+
+func TestRouter_GlobalsAccessibleInLayouts(t *testing.T) {
+	templates := []testTemplate{
+		{"layouts/default.tmpl", "layout-user:{{.globals.currentUser}} content:{{.content}}"},
+		{"path/to/index.tmpl", "page-user:{{.globals.currentUser}}"},
+	}
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
+	router.Use(
+		Global("currentUser", func(render *Render) any {
+			return "john"
+		}),
+	)
+
+	req := httptest.NewRequest("GET", "/path/to", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	resp := rec.Result()
+	body, _ := io.ReadAll(resp.Body)
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "layout-user:john content:page-user:john", string(body))
+}
+
+func TestRouter_UseTemplateFunctions(t *testing.T) {
 	templates := []testTemplate{
 		{"v1/{var1}/index.tmpl", "{{.path_variables.var1 | to_upper}}"},
 	}
@@ -199,12 +300,10 @@ func TestRouter_UseGlobalFunctions(t *testing.T) {
 	defer cleanup()
 
 	router.Use(
-		Func("to_upper", func(values ...string) string {
-			result := ""
-			for _, v := range values {
-				result += strings.ToUpper(v)
+		Func("to_upper", func(render *Render) any {
+			return func(value string) string {
+				return strings.ToUpper(value)
 			}
-			return result
 		}),
 	)
 
@@ -216,6 +315,56 @@ func TestRouter_UseGlobalFunctions(t *testing.T) {
 	resp := rec.Result()
 	body, _ := io.ReadAll(resp.Body)
 	assert.Equal(t, "VAL", string(body))
+}
+
+func TestRouter_RenderFuncCanAccessRender(t *testing.T) {
+	templates := []testTemplate{
+		{"v1/index.tmpl", "{{i18n \"hello\"}}"},
+	}
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
+	translations := map[string]map[string]string{
+		"en": {"hello": "Hello"},
+		"de": {"hello": "Hallo"},
+	}
+
+	router.Use(
+		Global("lang", func(render *Render) any {
+			acceptLang := render.Request().Header.Get("Accept-Language")
+			if strings.HasPrefix(acceptLang, "de") {
+				return "de"
+			}
+			return "en"
+		}),
+		Func("i18n", func(render *Render) any {
+			return func(key string) string {
+				lang := render.Globals()["lang"].(string)
+				if t, ok := translations[lang]; ok {
+					if val, ok := t[key]; ok {
+						return val
+					}
+				}
+				return key
+			}
+		}),
+	)
+
+	req := httptest.NewRequest("GET", "/v1", nil)
+	req.Header.Set("Accept-Language", "de-DE")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	resp := rec.Result()
+	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, "Hallo", string(body))
+
+	req2 := httptest.NewRequest("GET", "/v1", nil)
+	req2.Header.Set("Accept-Language", "en-US")
+	rec2 := httptest.NewRecorder()
+	router.ServeHTTP(rec2, req2)
+	resp2 := rec2.Result()
+	body2, _ := io.ReadAll(resp2.Body)
+	assert.Equal(t, "Hello", string(body2))
 }
 
 func TestRouter_Get(t *testing.T) {

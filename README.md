@@ -1,8 +1,3 @@
-TODO:
-
-- test for adding globals to layouts
-- test for //index error
-
 # Dave
 
 A file-based router for Go, built for HTMX applications.
@@ -46,20 +41,21 @@ Visit `http://localhost:8080/` to see your page.
 
 ## Globals
 
-Globals provide shared data and services across all templates. They're evaluated on every request.
+Globals provide a way to share data and services across all templates. They're evaluated on every request and have access to the request and render context.
 
 ```go
 r.Use(
-    // Data providers
-    router.Global("currentUser", func() any {
-        return auth.GetCurrentUser()
+    // Data providers with request access
+    router.Global("currentUser", func(render *router.Render) any {
+        token := render.Request().Header.Get("Authorization")
+        return auth.GetUserFromToken(token)
     }),
-    router.Global("config", func() any {
+    router.Global("config", func(render *router.Render) any {
         return appConfig
     }),
 
-    // Service registration
-    router.Global("userService", func() any {
+    // Access path variables
+    router.Global("userService", func(render *router.Render) any {
         return &UserService{db: db}
     }),
 )
@@ -79,6 +75,30 @@ userService := router.GlobalValue(r, "userService").(*UserService)
 - Services that handlers or templates need to access
 
 ## Form Handling
+
+Form handlers process form submissions and return data for templates. Register them with `router.FormHandler()` and specify which HTTP methods they handle:
+
+```go
+r.Use(
+    router.FormHandler("createUser",
+        router.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
+            // Process POST request
+            return user, nil
+        }),
+    ),
+)
+```
+
+Trigger a handler by including `d_form_handler` in your form:
+
+```html
+<form method="POST">
+  <input type="hidden" name="d_form_handler" value="createUser" />
+  <!-- form fields -->
+</form>
+```
+
+For simple handlers that just return data without validation, return any value directly. Use `FormResponse` when you need form state preservation and validation errors.
 
 ### FormResponse
 
@@ -171,7 +191,8 @@ Layouts wrap page content with shared structure (headers, footers, navigation). 
 </html>
 ```
 
-The `{{.content}}` placeholder is replaced with the rendered page template. The default layout (`layouts/default.tmpl`) is applied automatically if it exists.
+The `{{.content}}` placeholder is replaced with the rendered page template.
+The default layout (`layouts/default.tmpl`) is applied automatically if it exists. Configure a different default with `DefaultLayout` in [Configuration](#configuration).
 
 ### Layout Resolvers
 
@@ -215,13 +236,19 @@ Reference other templates:
 
 ## Template Functions
 
-Add custom functions for use in templates:
+Template functions have access to the render context via `Func`. Pass a factory function that receives `*Render` and returns the template function:
 
 ```go
 r.Use(
-    router.Func("upper", strings.ToUpper),
-    router.Func("formatMoney", func(cents int) string {
-        return fmt.Sprintf("$%.2f", float64(cents)/100)
+    router.Func("upper", func(render *router.Render) any {
+        return func(s string) string {
+            return strings.ToUpper(s)
+        }
+    }),
+    router.Func("formatMoney", func(render *router.Render) any {
+        return func(cents int) string {
+            return fmt.Sprintf("$%.2f", float64(cents)/100)
+        }
     }),
 )
 ```
@@ -234,6 +261,8 @@ Use in templates:
 ```
 
 **i18n Example:**
+
+Since `Func` has access to the render context, i18n becomes simple - the function can read the language from globals directly:
 
 ```go
 // translations.go
@@ -255,31 +284,38 @@ func loadTranslations(dir string) Translations {
 // main.go
 translations := loadTranslations("translations")
 
-// Register a global that detects language from Accept-Language header
+// Global that detects language from Accept-Language header
 r.Use(
-    router.Global("lang", func() any {
-        // Note: In a real app, you'd access the request context here
-        return "en" // Default language
+    router.Global("lang", func(render *router.Render) any {
+        acceptLang := render.Request().Header.Get("Accept-Language")
+        if strings.HasPrefix(acceptLang, "de") {
+            return "de"
+        }
+        return "en"
     }),
 )
 
-// Simple translation function (uses default language)
+// i18n function reads language from render context
 r.Use(
-    router.Func("i18n", func(key string) string {
-        lang := "en"
-        if t, ok := translations[lang]; ok {
-            if val, ok := t[key]; ok {
-                return val
+    router.Func("i18n", func(render *router.Render) any {
+        return func(key string) string {
+            lang := render.Globals()["lang"].(string)
+            if t, ok := translations[lang]; ok {
+                if val, ok := t[key]; ok {
+                    return val
+                }
             }
+            return key
         }
-        return key
     }),
 )
 ```
 
-Template: `<h1>{{i18n "welcome_message"}}</h1>`
+Template usage - no need to pass language explicitly:
 
-For language detection based on `Accept-Language`, use a global to provide the detected language and access it in templates:
+```html
+<h1>{{i18n "welcome_message"}}</h1>
+```
 
 ## Configuration
 

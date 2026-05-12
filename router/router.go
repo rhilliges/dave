@@ -25,20 +25,25 @@ type (
 type Router struct {
 	fs             fs.FS
 	formHandlers   map[string]map[string]FormHandlerFunc
-	globals        map[string]func() any
+	globals        map[string]func(render *Render) any
+	templateFuncs  map[string]func(*Render) any
 	templates      *template.Template
-	funcs          map[string]any
 	config         *Conf
 	lastRender     *Render
 	layoutResolver LayoutResolverFunc
 }
 
 type Render struct {
+	request        *http.Request
 	template       string
 	pathVariables  map[string]string
 	globals        map[string]any
 	resolvedValues map[string]any
 	layout         string
+}
+
+func (r *Render) Request() *http.Request {
+	return r.request
 }
 
 func (r *Render) Template() string {
@@ -116,13 +121,13 @@ func (c *Conf) getMaxFormSize() int64 {
 	return c.MaxFormSize
 }
 
-func Func(s string, f any) ConfFunc {
+func Func(name string, factory func(*Render) any) ConfFunc {
 	return func(router *Router) {
-		router.funcs[s] = f
+		router.templateFuncs[name] = factory
 	}
 }
 
-func Global(name string, globalFunc func() any) ConfFunc {
+func Global(name string, globalFunc func(render *Render) any) ConfFunc {
 	return func(router *Router) {
 		router.globals[name] = globalFunc
 	}
@@ -176,11 +181,11 @@ func MethodHandler(m string, handler FormHandlerFunc) FormHandlerConfFunc {
 
 func NewRouter(fs fs.FS) *Router {
 	return &Router{
-		fs:           fs,
-		formHandlers: make(map[string]map[string]FormHandlerFunc),
-		globals:      make(map[string]func() any),
-		funcs:        make(map[string]any),
-		config:       &Conf{},
+		fs:            fs,
+		formHandlers:  make(map[string]map[string]FormHandlerFunc),
+		globals:       make(map[string]func(render *Render) any),
+		templateFuncs: make(map[string]func(*Render) any),
+		config:        &Conf{},
 	}
 }
 
@@ -202,7 +207,14 @@ func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	render, err := router.getRender(w, r)
+
 	rootTemplate, _ := router.templates.Clone()
+	renderFuncs := make(template.FuncMap)
+	for name, factory := range router.templateFuncs {
+		renderFuncs[name] = factory(render)
+	}
+	rootTemplate.Funcs(renderFuncs)
+
 	data := make(map[string]any)
 	if err != nil {
 		daveError := &daveError{}
@@ -266,7 +278,13 @@ func (router *Router) handleTemplateError(w http.ResponseWriter, r *http.Request
 func (router *Router) ScanTemplates() error {
 	slog.Info("scanning templates")
 	rootTemplate := template.New(time.Now().String())
-	rootTemplate.Funcs(router.funcs)
+
+	placeholderFuncs := make(template.FuncMap)
+	for name, factory := range router.templateFuncs {
+		placeholderFuncs[name] = factory(nil)
+	}
+	rootTemplate.Funcs(placeholderFuncs)
+
 	ext := router.config.getTemplateExtension()
 	root := router.fs
 	var scanErr error
@@ -321,60 +339,48 @@ func (router *Router) ScanTemplates() error {
 func (router *Router) getRender(w http.ResponseWriter, r *http.Request) (*Render, error) {
 	logger := LoggerFromContext(r.Context())
 	logger.Debug("creating render object")
-	globals := make(map[string]any)
-	resolvedValues := make(map[string]any)
-	pathVariables := make(map[string]string)
-	template := ""
-	layout := ""
+
+	render := &Render{
+		request:        r,
+		pathVariables:  make(map[string]string),
+		globals:        make(map[string]any),
+		resolvedValues: make(map[string]any),
+	}
+
+	render.layout = r.Header.Get("D-LAYOUT")
+	if render.layout == "" && router.layoutResolver != nil {
+		render.layout = router.layoutResolver(r)
+		if render.layout == "" {
+			logger.Debug("layout resolver returned empty string; rendering w/o layout")
+		}
+	} else if render.layout == "" {
+		render.layout = router.config.getDefaultLayout()
+	}
+	if render.layout != "" {
+		render.layout = strings.Join([]string{"layouts", render.layout}, "/")
+		layoutTemplate := router.templates.Lookup(render.layout)
+		if layoutTemplate == nil {
+			logger.Debug("layout not found; rendering w/o layout", "layout", render.layout)
+			render.layout = ""
+		}
+	}
 
 	templateName := r.Header.Get("D-TEMPLATE")
 	if templateName == "" {
 		templateName = "index"
 	}
-
-	layout = r.Header.Get("D-LAYOUT")
-	if layout == "" && router.layoutResolver != nil {
-		layout = router.layoutResolver(r)
-		if layout == "" {
-			logger.Debug("layout resolver returned empty string; rendering w/o layout")
-		}
-	} else if layout == "" {
-		layout = router.config.getDefaultLayout()
-	}
-
-	if layout != "" {
-		layout = strings.Join([]string{"layouts", layout}, "/")
-		layoutTemplate := router.templates.Lookup(layout)
-		if layoutTemplate == nil {
-			logger.Debug("layout not found; rendering w/o layout", "layout", layout)
-			layout = ""
-		}
-	}
-
 	reqPath := strings.TrimSuffix(r.URL.Path, "/") + "/" + templateName
-	template, pathVariables = router.parseRequestPath(router.templates, reqPath)
-	logger.Debug("resolved template", "template", template, "path_variables", pathVariables)
+	render.template, render.pathVariables = router.parseRequestPath(router.templates, reqPath)
+	logger.Debug("resolved template", "template", render.template, "path_variables", render.pathVariables)
 
 	for name, global := range router.globals {
-		globals[name] = global()
+		render.globals[name] = global(render)
 	}
 
-	if template == "" {
+	if render.template == "" {
 		logger.Debug("template not found", "requested_path", reqPath)
 		w.WriteHeader(http.StatusNotFound)
-		return &Render{
-				template,
-				pathVariables,
-				globals,
-				resolvedValues,
-				layout,
-			},
-			NotFound(fmt.Errorf("no template at %s", reqPath))
-	}
-
-	keys := make([]string, 0, len(pathVariables))
-	for k := range pathVariables {
-		keys = append(keys, k)
+		return render, NotFound(fmt.Errorf("no template at %s", reqPath))
 	}
 
 	contentType := r.Header.Get("Content-Type")
@@ -391,6 +397,7 @@ func (router *Router) getRender(w http.ResponseWriter, r *http.Request) (*Render
 			return nil, Unexpected(fmt.Errorf("failed to parse form: %w", err))
 		}
 	}
+
 	formHandlerKey := r.FormValue("d_form_handler")
 	if formHandlerKey != "" {
 		logger.Info("executing form handler", "handler", formHandlerKey, "method", r.Method)
@@ -406,16 +413,7 @@ func (router *Router) getRender(w http.ResponseWriter, r *http.Request) (*Render
 			w.WriteHeader(500)
 			return nil, Unexpected(fmt.Errorf("handler %s does not support method: %s", formHandlerKey, r.Method))
 		}
-		resolverCtx := context.WithValue(
-			r.Context(),
-			requestContextKey{},
-			Render{
-				template,
-				pathVariables,
-				globals,
-				resolvedValues,
-				layout,
-			})
+		resolverCtx := context.WithValue(r.Context(), requestContextKey{}, *render)
 		resolverReq := r.WithContext(resolverCtx)
 		guardedWriter := &guardedResponseWriter{ResponseWriter: w, logger: logger}
 		val, err := handlerMethod(guardedWriter, resolverReq)
@@ -425,20 +423,14 @@ func (router *Router) getRender(w http.ResponseWriter, r *http.Request) (*Render
 		}
 		logger.Info("form handler completed", "handler", formHandlerKey)
 		if formResponse, ok := val.(*FormResponse); ok {
-			resolvedValues["form"] = formResponse
-			resolvedValues["result"] = formResponse.Result
+			render.resolvedValues["form"] = formResponse
+			render.resolvedValues["result"] = formResponse.Result
 		} else {
-			resolvedValues["result"] = val
+			render.resolvedValues["result"] = val
 		}
 	}
 
-	return &Render{
-		template,
-		pathVariables,
-		globals,
-		resolvedValues,
-		layout,
-	}, nil
+	return render, nil
 }
 
 func (router *Router) parseRequestPath(templates *template.Template, path string) (string, map[string]string) {
