@@ -73,7 +73,7 @@ Create `templates/index.tmpl`:
 
 Visit `http://localhost:8080/` — that's it!
 
-## Core Concepts
+## Usage
 
 ### Path Variables
 
