@@ -168,7 +168,40 @@ Trigger with a hidden input:
 </form>
 ```
 
-Handler results are available as `{{.result}}` in templates.
+Handler results are available as `{{.result}}` in templates. See [Form Handling](docs/reference.md#form-handling) for validation, `FormResponse`, and more.
+
+## Error Handling
+
+Return typed errors for proper HTTP status codes:
+
+```go
+// 404 - renders fallback/not_found.tmpl
+return nil, dave.NotFound(fmt.Errorf("user not found"))
+
+// 500 - renders fallback/unexpected_error.tmpl
+return nil, dave.Unexpected(err)
+```
+
+Create custom error pages in `templates/fallback/`:
+
+```html
+<!-- templates/fallback/not_found.tmpl -->
+<h1>404 - Not Found</h1>
+<p>{{.error}}</p>
+```
+
+Register custom error types for domain-specific errors:
+
+```go
+var ErrUnauthorized = errors.New("unauthorized")
+
+r.Use(
+    dave.ErrorType(ErrUnauthorized, http.StatusUnauthorized, "unauthorized"),
+)
+```
+
+See [Error Handling](docs/reference.md#error-handling) for custom error types, error handling in globals, and more.
+```
 
 ### Layouts
 
@@ -188,20 +221,6 @@ Wrap pages with shared structure. Create `templates/layouts/default.tmpl`:
 ```
 
 Page templates automatically render inside `{{.content}}`.
-
-## Error Handling
-
-Return typed errors for proper HTTP status codes:
-
-```go
-// 404 - renders fallback/not_found.tmpl
-return nil, dave.NotFound(fmt.Errorf("user not found"))
-
-// 500 - renders fallback/unexpected_error.tmpl
-return nil, dave.Unexpected(err)
-```
-
-Create custom error pages in `templates/fallback/`.
 
 ## Template Functions
 

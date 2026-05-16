@@ -8,9 +8,9 @@ Reference documentation for Dave, a file-based router for Go.
 - [Configuration](#configuration)
 - [Globals](#globals)
 - [Form Handling](#form-handling)
+- [Error Handling](#error-handling)
 - [Layouts](#layouts)
 - [Template Functions](#template-functions)
-- [Error Handling](#error-handling)
 - [Request Lifecycle](#request-lifecycle)
 - [Template Priority](#template-priority)
 - [Headers](#headers)
@@ -287,16 +287,156 @@ dave.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
 
 ### Response Writer Rules
 
-Handlers can set headers and status codes but should NOT write to the response body:
+Handlers can set headers and status codes but should NOT write to the response body.
+
+Dave wraps the response writer to prevent handlers from bypassing template rendering. If a handler calls `w.Write()`:
+
+1. The write is silently ignored (returns success to avoid handler errors)
+2. An error is logged: `"handler wrote to response body"`
+3. Template rendering proceeds normally
 
 ```go
-// OK
+// OK - set headers and status
 w.Header().Set("HX-Location", "/users")
 w.WriteHeader(http.StatusCreated)
 return user, nil
 
-// NOT OK (will be logged as error)
-w.Write([]byte("..."))
+// NOT OK - write is ignored and logged as error
+w.Write([]byte("..."))  // Does nothing, logged as error
+
+// NOT OK - streaming responses not supported
+http.ServeFile(w, r, "file.pdf")  // Won't work as expected
+```
+
+If you need to bypass template rendering entirely (e.g., for file downloads or API responses), use standard Go handlers outside of Dave's router.
+
+---
+
+## Error Handling
+
+### Builtin Error Types
+
+Dave provides two builtin error types for common cases:
+
+| Function                  | Status | Fallback Template             |
+| ------------------------- | ------ | ----------------------------- |
+| `NotFound(cause error)`   | 404    | `fallback/not_found.tmpl`     |
+| `Unexpected(cause error)` | 500    | `fallback/unexpected_error.tmpl` |
+
+Dave uses these internally:
+- `NotFound` is returned when a request path doesn't match any template
+- `Unexpected` is returned for template parsing errors, unregistered form handlers, and other internal errors
+
+They can also be used in registered handlers:
+
+```go
+dave.Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
+    id := dave.PathVariable(r, "id").(string)
+    user, err := db.GetUser(id)
+    if err != nil {
+        return nil, dave.Unexpected(err)
+    }
+    if user == nil {
+        return nil, dave.NotFound(fmt.Errorf("user %s not found", id))
+    }
+    return user, nil
+})
+```
+
+Create fallback templates in `templates/fallback/`:
+
+```html
+<!-- templates/fallback/not_found.tmpl -->
+<h1>404 - Not Found</h1>
+<p>{{.error}}</p>
+<a href="/">Go Home</a>
+```
+
+### ErrorType
+
+In addition to built in errors, Dave allows registering of custom error types.
+
+```go
+func ErrorType(target error, status int, fallbackName string) ConfFunc
+```
+
+When an error occurs (or an error wrapping the target), Dave will:
+
+1. Set the HTTP status code
+2. Render `fallback/<fallbackName>.tmpl` if it exists
+3. Otherwise return a plain text response
+
+**Setup:**
+
+```go
+var ErrUnauthorized = errors.New("unauthorized")
+var ErrForbidden = errors.New("forbidden")
+
+r.Use(
+    dave.ErrorType(ErrUnauthorized, http.StatusUnauthorized, "unauthorized"),
+    dave.ErrorType(ErrForbidden, http.StatusForbidden, "forbidden"),
+)
+```
+
+Create corresponding fallback templates:
+
+```html
+<!-- templates/fallback/unauthorized.tmpl -->
+<h1>401 - Unauthorized</h1>
+<p>Please <a href="/login">log in</a> to continue.</p>
+```
+
+Wrapped errors are supported—Dave unwraps errors to find matches.
+
+**In form handlers:**
+
+```go
+dave.Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
+    user := auth.GetUser(r)
+    if user == nil {
+        return nil, ErrUnauthorized
+    }
+    if !user.HasPermission("admin") {
+        return nil, fmt.Errorf("user %s lacks permission: %w", user.ID, ErrForbidden)
+    }
+    return user, nil
+})
+```
+
+**In globals:**
+
+Custom error types also work with globals. If a global returns an object with methods that return errors, Dave maps them to the appropriate error type.
+
+```go
+type AuthService struct{}
+
+func (a *AuthService) CurrentUser() (*User, error) {
+    return nil, ErrUnauthorized
+}
+
+r.Use(
+    dave.Global("auth", func(render *dave.Render) any {
+        return &AuthService{}
+    }),
+)
+```
+
+In templates:
+
+```html
+<!-- Triggers unauthorized fallback if no user is logged in -->
+{{.globals.auth.CurrentUser.Name}}
+```
+
+When the template calls `.CurrentUser` and it returns `ErrUnauthorized`, Dave catches the error and renders `fallback/unauthorized.tmpl` with a 401 status code.
+
+### Logging
+
+Each request gets a unique `request_id`. Get the logger in handlers:
+
+```go
+logger := dave.LoggerFromContext(r.Context())
+logger.Info("processing", "user_id", userID)
 ```
 
 ---
@@ -397,62 +537,6 @@ r.Use(
 <h1>{{upper .title}}</h1>
 <p>Created: {{.createdAt | formatDate}}</p>
 {{if isAdmin}}<a href="/admin">Admin Panel</a>{{end}}
-```
-
----
-
-## Error Handling
-
-### NotFound
-
-Returns a 404 error that renders `fallback/not_found.tmpl`.
-
-```go
-func NotFound(cause error) error
-```
-
-### Unexpected
-
-Returns a 500 error that renders `fallback/unexpected_error.tmpl`. Automatically logged.
-
-```go
-func Unexpected(cause error) error
-```
-
-**Example:**
-
-```go
-dave.Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
-    id := dave.PathVariable(r, "id").(string)
-    user, err := db.GetUser(id)
-    if err != nil {
-        return nil, dave.Unexpected(err)
-    }
-    if user == nil {
-        return nil, dave.NotFound(fmt.Errorf("user %s not found", id))
-    }
-    return user, nil
-})
-```
-
-### Fallback Templates
-
-Create `templates/fallback/not_found.tmpl` and `templates/fallback/unexpected_error.tmpl`:
-
-```html
-<!-- templates/fallback/not_found.tmpl -->
-<h1>404 - Not Found</h1>
-<p>{{.error}}</p>
-<a href="/">Go Home</a>
-```
-
-### Logging
-
-Each request gets a unique `request_id`. Get the logger in handlers:
-
-```go
-logger := dave.LoggerFromContext(r.Context())
-logger.Info("processing", "user_id", userID)
 ```
 
 ---
