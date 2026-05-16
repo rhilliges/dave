@@ -2,6 +2,7 @@ package dave
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -53,12 +54,13 @@ import (
 // - implement Form object
 // - fix i18n stuff
 // - document accessing data through template func
+// - custom fallback templates for e.g. auth errors
+// - clone root templates before rendering
 
 // What to do next:
-// - custom fallback templates for e.g. auth errors
-// - dev experience (caching, ScanTemplates)
-// - clone root templates before rendering
+// - figure out logging; double check how Go's conventions are
 // - figure out middlewares/how to integrate middleware? (authentication, authorization)
+// - dev experience (caching, ScanTemplates)
 // - register path resolvers using reflection on the package path vs. a path variable - see if feasible
 // - custom renderer
 
@@ -571,7 +573,7 @@ func TestRouter_UnknownHandler(t *testing.T) {
 
 	resp := rec.Result()
 	body, _ := io.ReadAll(resp.Body)
-	assert.Equal(t, "unexpected error: no registered handler: handler1", string(body))
+	assert.Equal(t, "no registered handler: handler1", string(body))
 	assert.Equal(t, 500, resp.StatusCode)
 }
 
@@ -601,7 +603,8 @@ func TestRouter_HandlerDoesNotSupportMethod(t *testing.T) {
 	resp := rec.Result()
 	body, _ := io.ReadAll(resp.Body)
 	assert.False(t, resolverCalled, "resolver was called")
-	assert.Equal(t, "unexpected error: handler handler1 does not support method: POST", string(body))
+	assert.Equal(t, "handler handler1 does not support method: POST", string(body))
+	assert.Equal(t, 500, resp.StatusCode)
 }
 
 func TestRouter_TemplateNotFoundError(t *testing.T) {
@@ -617,7 +620,7 @@ func TestRouter_TemplateNotFoundError(t *testing.T) {
 
 	assert.Equal(t, resp.StatusCode, http.StatusNotFound)
 	body, _ := io.ReadAll(resp.Body)
-	assert.Equal(t, "not found: no template at /path/to/nothing/index", string(body))
+	assert.Equal(t, "no template at /path/to/nothing/index", string(body))
 }
 
 func TestRouter_ResourceNotFoundError(t *testing.T) {
@@ -647,8 +650,9 @@ func TestRouter_ResourceNotFoundError(t *testing.T) {
 
 	resp := rec.Result()
 	body, _ := io.ReadAll(resp.Body)
-	assert.Equal(t, resp.StatusCode, http.StatusOK, "expected status OK because resolver didn't set response code")
-	assert.Equal(t, "not found: no entity found for value1", string(body))
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	assert.Equal(t, "no entity found for value1", string(body))
+	assert.Equal(t, 404, resp.StatusCode)
 }
 
 func TestRouter_UnexpectedError(t *testing.T) {
@@ -678,7 +682,7 @@ func TestRouter_UnexpectedError(t *testing.T) {
 	resp := rec.Result()
 	body, _ := io.ReadAll(resp.Body)
 	assert.Equal(t, "text/plain; charset=utf-8", resp.Header.Get("Content-Type"))
-	assert.Equal(t, "unexpected error: some unexpected error resolving var1=value1", string(body))
+	assert.Equal(t, "some unexpected error resolving var1=value1", string(body))
 }
 
 func TestRouter_UnexpectedErrorFallback(t *testing.T) {
@@ -739,7 +743,7 @@ func TestRouter_ResourceNotFoundErrorFallback(t *testing.T) {
 	resp := rec.Result()
 	body, _ := io.ReadAll(resp.Body)
 	assert.Equal(t, "text/html; charset=utf-8", resp.Header.Get("Content-Type"))
-	assert.Equal(t, resp.StatusCode, http.StatusOK, "expected status OK because resolver didn't set response code")
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 	assert.Equal(t, "404, not found: no entity found for value1", string(body))
 }
 
@@ -1316,4 +1320,205 @@ func TestRouter_FormHandler_NonFormResponse(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Equal(t, "result:simple-result,formNil:nil", string(body))
+}
+
+var ErrUnauthorized = errors.New("unauthorized")
+
+func TestRouter_CustomErrorType(t *testing.T) {
+	templates := []testTemplate{
+		{"index.tmpl", ""},
+		{"fallback/unauthorized.tmpl", "401: {{.error}}"},
+	}
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
+	data := url.Values{}
+	data.Add("d_form_handler", "test")
+	req := httptest.NewRequest("GET", "/?"+data.Encode(), nil)
+	rec := httptest.NewRecorder()
+
+	router.Use(
+		ErrorType(ErrUnauthorized, http.StatusUnauthorized, "unauthorized"),
+		FormHandler(
+			"test",
+			Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
+				return nil, ErrUnauthorized
+			}),
+		),
+	)
+
+	router.ServeHTTP(rec, req)
+
+	resp := rec.Result()
+	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	assert.Equal(t, "text/html; charset=utf-8", resp.Header.Get("Content-Type"))
+	assert.Equal(t, "401: unauthorized", string(body))
+}
+
+var ErrForbidden = errors.New("forbidden")
+
+func TestRouter_CustomErrorType_WrappedError(t *testing.T) {
+	templates := []testTemplate{
+		{"index.tmpl", ""},
+		{"fallback/forbidden.tmpl", "403: {{.error}}"},
+	}
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
+	data := url.Values{}
+	data.Add("d_form_handler", "test")
+	req := httptest.NewRequest("GET", "/?"+data.Encode(), nil)
+	rec := httptest.NewRecorder()
+
+	router.Use(
+		ErrorType(ErrForbidden, http.StatusForbidden, "forbidden"),
+		FormHandler(
+			"test",
+			Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
+				return nil, fmt.Errorf("user lacks permission: %w", ErrForbidden)
+			}),
+		),
+	)
+
+	router.ServeHTTP(rec, req)
+
+	resp := rec.Result()
+	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+	assert.Equal(t, "text/html; charset=utf-8", resp.Header.Get("Content-Type"))
+	assert.Equal(t, "403: forbidden", string(body))
+}
+
+var ErrRateLimited = errors.New("rate limited")
+
+func TestRouter_CustomErrorType_NoFallbackTemplate(t *testing.T) {
+	templates := []testTemplate{
+		{"index.tmpl", ""},
+	}
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
+	data := url.Values{}
+	data.Add("d_form_handler", "test")
+	req := httptest.NewRequest("GET", "/?"+data.Encode(), nil)
+	rec := httptest.NewRecorder()
+
+	router.Use(
+		ErrorType(ErrRateLimited, http.StatusTooManyRequests, "rate_limited"),
+		FormHandler(
+			"test",
+			Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
+				return nil, ErrRateLimited
+			}),
+		),
+	)
+
+	router.ServeHTTP(rec, req)
+
+	resp := rec.Result()
+	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, http.StatusTooManyRequests, resp.StatusCode)
+	assert.Equal(t, "text/plain; charset=utf-8", resp.Header.Get("Content-Type"))
+	assert.Equal(t, "rate limited", string(body))
+}
+
+func TestRouter_CustomErrorType_FirstMatchWins(t *testing.T) {
+	templates := []testTemplate{
+		{"index.tmpl", ""},
+		{"fallback/unauthorized.tmpl", "unauthorized fallback"},
+		{"fallback/forbidden.tmpl", "forbidden fallback"},
+	}
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
+	data := url.Values{}
+	data.Add("d_form_handler", "test")
+	req := httptest.NewRequest("GET", "/?"+data.Encode(), nil)
+	rec := httptest.NewRecorder()
+
+	router.Use(
+		ErrorType(ErrUnauthorized, http.StatusUnauthorized, "unauthorized"),
+		ErrorType(ErrForbidden, http.StatusForbidden, "forbidden"),
+		FormHandler(
+			"test",
+			Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
+				return nil, fmt.Errorf("wrapped: %w", fmt.Errorf("double wrap: %w", ErrUnauthorized))
+			}),
+		),
+	)
+
+	router.ServeHTTP(rec, req)
+
+	resp := rec.Result()
+	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	assert.Equal(t, "unauthorized fallback", string(body))
+}
+
+func TestRouter_CustomErrorType_FallsBackToUnexpected(t *testing.T) {
+	templates := []testTemplate{
+		{"index.tmpl", ""},
+		{"fallback/unexpected_error.tmpl", "500: {{.error}}"},
+	}
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
+	data := url.Values{}
+	data.Add("d_form_handler", "test")
+	req := httptest.NewRequest("GET", "/?"+data.Encode(), nil)
+	rec := httptest.NewRecorder()
+
+	router.Use(
+		ErrorType(ErrUnauthorized, http.StatusUnauthorized, "unauthorized"),
+		FormHandler(
+			"test",
+			Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
+				return nil, errors.New("some unknown error")
+			}),
+		),
+	)
+
+	router.ServeHTTP(rec, req)
+
+	resp := rec.Result()
+	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+	assert.Equal(t, "500: some unknown error", string(body))
+}
+
+func TestRouter_GlobalMethodReturnsError_MapsToErrorType(t *testing.T) {
+	templates := []testTemplate{
+		{"index.tmpl", "{{.globals.auth.CurrentUser}}"},
+		{"fallback/unauthorized.tmpl", "401: {{.error}}"},
+	}
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
+	req := httptest.NewRequest("GET", "/", nil)
+	rec := httptest.NewRecorder()
+
+	router.Use(
+		ErrorType(ErrUnauthorized, http.StatusUnauthorized, "unauthorized"),
+		Global("auth", func(render *Render) any {
+			return &AuthService{}
+		}),
+	)
+
+	router.ServeHTTP(rec, req)
+
+	resp := rec.Result()
+	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	assert.Equal(t, "401: unauthorized", string(body))
+}
+
+type AuthService struct{}
+
+func (a *AuthService) CurrentUser() (*User, error) {
+	return nil, fmt.Errorf("some error: %w", ErrUnauthorized)
+}
+
+type User struct {
+	Name string
 }
