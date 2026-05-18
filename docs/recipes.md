@@ -2,6 +2,69 @@
 
 This page contains practical recipes and patterns for common use cases with Dave.
 
+## HTMX Integration
+
+Dave works great with HTMX.
+
+Use a layout resolver to skip layouts for partial requests:
+
+```go
+r.Use(
+    dave.LayoutResolver(func(r *http.Request) string {
+        // No layout for HTMX partial requests
+        if r.Header.Get("HX-Request") == "true" {
+            return ""
+        }
+        // Admin layout for admin routes
+        if strings.HasPrefix(r.URL.Path, "/admin") {
+            return "admin"
+        }
+        return "default"
+    }),
+)
+```
+
+Set `HX-Location` headers to trigger client-side redirects after form submissions:
+
+```go
+dave.FormHandler("createUser",
+    dave.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
+        user := db.CreateUser(r.FormValue("name"))
+        w.Header().Set("HX-Location", "/users/"+user.ID)
+        return user, nil
+    }),
+)
+```
+
+Use `hx-vals` to pass the form handler name:
+
+```html
+<form hx-post="/users" hx-vals='{"d_form_handler": "createUser"}'>
+  <input type="text" name="name" placeholder="Name" />
+  <button type="submit">Create</button>
+</form>
+```
+
+Redirect after form submission:
+
+```go
+dave.FormHandler("createUser",
+    dave.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
+        user := db.CreateUser(r.FormValue("name"))
+        w.Header().Set("HX-Location", "/users/"+user.ID)
+        return user, nil
+    }),
+)
+```
+
+## Open Dialogs with D-TEMPLATE
+
+TBD
+
+## Implement Fullscreen View with D-LAYOUT
+
+TBD
+
 ## Embedding Templates
 
 For single-binary deployment, use Go's `embed` package to bundle templates into the executable:
@@ -26,6 +89,75 @@ func main() {
 }
 ```
 
+## Request Logging
+
+Add your own logging middleware to match your application's needs:
+
+```go
+package main
+
+import (
+    "log/slog"
+    "net/http"
+    "time"
+
+    "github.com/google/uuid"
+    "github.com/rhilliges/dave"
+)
+
+func Logger(next http.Handler) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        start := time.Now()
+        requestID := uuid.New().String()
+
+        logger := slog.Default().With(
+            "request_id", requestID,
+            "method", r.Method,
+            "path", r.URL.Path,
+        )
+
+        logger.Info("request started")
+        next.ServeHTTP(w, r)
+        logger.Info("request completed", "duration_ms", time.Since(start).Milliseconds())
+    })
+}
+
+func main() {
+    r := dave.NewRouter(os.DirFS("templates"))
+    http.ListenAndServe(":8080", Logger(r))
+}
+```
+
+For response status logging, wrap the `http.ResponseWriter`:
+
+```go
+type responseWriter struct {
+    http.ResponseWriter
+    status int
+}
+
+func (rw *responseWriter) WriteHeader(code int) {
+    rw.status = code
+    rw.ResponseWriter.WriteHeader(code)
+}
+
+func Logger(next http.Handler) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        start := time.Now()
+        rw := &responseWriter{ResponseWriter: w, status: http.StatusOK}
+
+        next.ServeHTTP(rw, r)
+
+        slog.Info("request",
+            "method", r.Method,
+            "path", r.URL.Path,
+            "status", rw.status,
+            "duration_ms", time.Since(start).Milliseconds(),
+        )
+    })
+}
+```
+
 ## Internationalization (i18n)
 
 Add multi-language support using globals and template functions together.
@@ -40,13 +172,7 @@ Create a `translations` directory with JSON files for each language:
 {
   "welcome": "Welcome",
   "users": "Users",
-  "new_user": "New User",
-  "name": "Name",
-  "email": "Email",
-  "birthday": "Birthday",
-  "create": "Create User",
-  "back": "Back to Users",
-  "joined": "Joined"
+  ...
 }
 ```
 
@@ -56,13 +182,7 @@ Create a `translations` directory with JSON files for each language:
 {
   "welcome": "Willkommen",
   "users": "Benutzer",
-  "new_user": "Neuer Benutzer",
-  "name": "Name",
-  "email": "E-Mail",
-  "birthday": "Geburtstag",
-  "create": "Benutzer erstellen",
-  "back": "Zurück zu Benutzern",
-  "joined": "Beigetreten"
+  ...
 }
 ```
 
@@ -135,70 +255,11 @@ r.Use(
 
 ### Using Translations in Templates
 
-Update your templates to use the `t` function. For example, `templates/users/index.tmpl`:
+Use the `t` function in your templates:
 
 ```html
-<h1 class="text-2xl font-bold mb-6">{{t "users"}}</h1>
-
-<div class="grid gap-4">
-  <div class="bg-white rounded-lg shadow p-6">
-    <h2 class="text-xl font-semibold mb-4">{{t "new_user"}}</h2>
-    <form hx-post="/users" hx-vals='{"d_form_handler": "createUser"}'>
-      <div class="space-y-4">
-        <div>
-          <label class="block text-sm font-medium mb-1">{{t "name"}}</label>
-          <input
-            type="text"
-            name="name"
-            class="w-full border rounded px-3 py-2"
-          />
-        </div>
-        <div>
-          <label class="block text-sm font-medium mb-1">{{t "email"}}</label>
-          <input
-            type="email"
-            name="email"
-            class="w-full border rounded px-3 py-2"
-          />
-        </div>
-        <div>
-          <label class="block text-sm font-medium mb-1">{{t "birthday"}}</label>
-          <input
-            type="date"
-            name="birthday"
-            class="w-full border rounded px-3 py-2"
-          />
-        </div>
-        <button
-          type="submit"
-          class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700"
-        >
-          {{t "create"}}
-        </button>
-      </div>
-    </form>
-  </div>
-
-  {{range .globals.users.All}}
-  <a href="/users/{{.ID}}" class="block">
-    {{template "components/user-card" .}}
-  </a>
-  {{else}}
-  <p class="text-gray-500">No users yet.</p>
-  {{end}}
-</div>
-```
-
-And `templates/components/user-card.tmpl`:
-
-```html
-<div class="bg-white rounded-lg shadow p-6">
-  <h2 class="text-xl font-semibold">{{.Name}}</h2>
-  <p class="text-gray-600">{{.Email}}</p>
-  <p class="text-gray-400 text-sm mt-2">
-    {{t "joined"}}: {{.CreatedAt | formatDate}}
-  </p>
-</div>
+<h1>{{t "welcome"}}</h1>
+<a href="/users">{{t "users"}}</a>
 ```
 
 ### Testing
@@ -209,59 +270,54 @@ Test by setting your browser's language preference to German, or by adding a hea
 curl -H "Accept-Language: de" http://localhost:8080/users
 ```
 
-The page now displays in German. This pattern demonstrates how globals (for request-scoped state like detected language) and template functions (for transforming data) can work together to build powerful features.
+The page now displays in German. This pattern demonstrates how globals (for request-scoped state like detected language) and template functions (for transforming data) can work together.
 
-## Function-Based Access
+## Debugging Template Data Access
 
-If you prefer accessing data via template functions instead of dot-notation, you can implement your own accessor functions. This can also be helpful when debugging:
+If you prefer accessing data via template functions instead of dot-notation, you can implement your own accessor functions. This can be helpful when debugging.
 
 ```go
 r.Use(
     dave.Func("var", func(render *dave.Render) any {
         return func(name string) string {
-            logger := dave.LoggerFromContext(render.Request().Context())
             val := render.PathVariables()[name]
-            logger.Debug("path variable accessed", "name", name, "value", val)
+            slog.Debug("path variable accessed", "name", name, "value", val)
             return val
         }
     }),
     dave.Func("global", func(render *dave.Render) any {
         return func(name string) any {
-            logger := dave.LoggerFromContext(render.Request().Context())
             val := render.Globals()[name]
-            logger.Debug("global accessed", "name", name, "value", val)
+            slog.Debug("global accessed", "name", name, "value", val)
             return val
         }
     }),
     dave.Func("form", func(render *dave.Render) any {
         return func() *dave.FormResponse {
-            logger := dave.LoggerFromContext(render.Request().Context())
             form := render.FormResponse()
-            logger.Debug("form accessed", "hasForm", form != nil)
+            slog.Debug("form accessed", "hasForm", form != nil)
             return form
         }
     }),
     dave.Func("field", func(render *dave.Render) any {
         return func(form *dave.FormResponse, name string) string {
-            logger := dave.LoggerFromContext(render.Request().Context())
             if form == nil {
-                logger.Debug("field accessed (no form)", "name", name)
+                slog.Debug("field accessed (no form)", "name", name)
                 return ""
             }
             val := form.Value(name, "")
-            logger.Debug("field accessed", "name", name, "value", val)
+            slog.Debug("field accessed", "name", name, "value", val)
             return val
         }
     }),
     dave.Func("error", func(render *dave.Render) any {
         return func(form *dave.FormResponse, name string) []string {
-            logger := dave.LoggerFromContext(render.Request().Context())
             if form == nil {
-                logger.Debug("error accessed (no form)", "name", name)
+                slog.Debug("error accessed (no form)", "name", name)
                 return nil
             }
             errs := form.Errors(name)
-            logger.Debug("error accessed", "name", name, "errors", errs)
+            slog.Debug("error accessed", "name", name, "errors", errs)
             return errs
         }
     }),

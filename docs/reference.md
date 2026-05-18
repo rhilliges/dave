@@ -14,7 +14,9 @@ Reference documentation for Dave, a file-based router for Go.
 - [Request Lifecycle](#request-lifecycle)
 - [Template Priority](#template-priority)
 - [Headers](#headers)
+- [Logging](#logging)
 - [Advanced API](#advanced-api)
+- [Template Data Reference](#template-data-reference)
 
 ---
 
@@ -139,7 +141,7 @@ r.Use(
 
 ### GlobalValue
 
-Retrieves a global value in a form handler.
+Retrieves a global value in a form handler. Use this to access globals that were registered with `Global()`.
 
 ```go
 func GlobalValue(r *http.Request, name string) any
@@ -194,7 +196,6 @@ r.Use(
         }),
         dave.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
             user := db.CreateUser(r.FormValue("name"))
-            w.Header().Set("HX-Location", "/users/"+user.ID)
             return user, nil
         }),
         dave.Delete(func(w http.ResponseWriter, r *http.Request) (any, error) {
@@ -257,6 +258,7 @@ dave.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
     // Success
     user := db.CreateUser(r.FormValue("email"))
     form.Result = user
+    w.Header().Set("HX-Location", "/users/"+user.ID) // HTMX way to redirect after creating an entity
     return form, nil
 })
 ```
@@ -318,12 +320,13 @@ If you need to bypass template rendering entirely (e.g., for file downloads or A
 
 Dave provides two builtin error types for common cases:
 
-| Function                  | Status | Fallback Template             |
-| ------------------------- | ------ | ----------------------------- |
-| `NotFound(cause error)`   | 404    | `fallback/not_found.tmpl`     |
+| Function                  | Status | Fallback Template                |
+| ------------------------- | ------ | -------------------------------- |
+| `NotFound(cause error)`   | 404    | `fallback/not_found.tmpl`        |
 | `Unexpected(cause error)` | 500    | `fallback/unexpected_error.tmpl` |
 
 Dave uses these internally:
+
 - `NotFound` is returned when a request path doesn't match any template
 - `Unexpected` is returned for template parsing errors, unregistered form handlers, and other internal errors
 
@@ -429,15 +432,6 @@ In templates:
 ```
 
 When the template calls `.CurrentUser` and it returns `ErrUnauthorized`, Dave catches the error and renders `fallback/unauthorized.tmpl` with a 401 status code.
-
-### Logging
-
-Each request gets a unique `request_id`. Get the logger in handlers:
-
-```go
-logger := dave.LoggerFromContext(r.Context())
-logger.Info("processing", "user_id", userID)
-```
 
 ---
 
@@ -578,6 +572,12 @@ Explicit paths beat path variables:
 
 ---
 
+## Logging
+
+Dave does not include built-in request logging. To add request logging, wrap the router with a middleware. See [Request Logging](recipes.md#request-logging) for examples.
+
+---
+
 ## Advanced API
 
 ### Render Type
@@ -629,14 +629,6 @@ func PathVariable(r *http.Request, name string) any
 
 ```go
 id := dave.PathVariable(r, "id").(string)
-```
-
-### LoggerFromContext
-
-Get the request-scoped logger:
-
-```go
-func LoggerFromContext(ctx context.Context) *slog.Logger
 ```
 
 ---

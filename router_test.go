@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"log/slog"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -58,9 +57,12 @@ import (
 // - clone root templates before rendering
 
 // What to do next:
+// - handle SECURITY.md
+// - how to handle file uploads?
+// - bad request error when form parsing fails?
 // - figure out logging; double check how Go's conventions are
-// - figure out middlewares/how to integrate middleware? (authentication, authorization)
 // - dev experience (caching, ScanTemplates)
+// - figure out middlewares/how to integrate middleware? (authentication, authorization)
 // - register path resolvers using reflection on the package path vs. a path variable - see if feasible
 // - custom renderer
 
@@ -997,16 +999,12 @@ func TestRouter_ExplicitPathTakesPrecedenceOverPathVariable(t *testing.T) {
 	}
 }
 
-func TestRouter_LogsErrorWhenHandlerWritesToResponseBody(t *testing.T) {
+func TestRouter_PanicsWhenHandlerWritesToResponseBody(t *testing.T) {
 	templates := []testTemplate{
 		{"path/to/index.tmpl", "template-content"},
 	}
 	router, cleanup := prepareTest(templates)
 	defer cleanup()
-
-	var logBuffer bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&logBuffer, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	slog.SetDefault(logger)
 
 	router.Use(
 		FormHandler("writeBody",
@@ -1022,10 +1020,9 @@ func TestRouter_LogsErrorWhenHandlerWritesToResponseBody(t *testing.T) {
 	req := httptest.NewRequest("GET", "/path/to?"+data.Encode(), nil)
 	rec := httptest.NewRecorder()
 
-	router.ServeHTTP(rec, req)
-
-	logOutput := logBuffer.String()
-	assert.Contains(t, logOutput, "handler wrote to response body")
+	assert.Panics(t, func() {
+		router.ServeHTTP(rec, req)
+	})
 }
 
 func TestRouter_DX_RescanTemplates(t *testing.T) {

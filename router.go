@@ -7,12 +7,9 @@ import (
 	"html/template"
 	"io"
 	"io/fs"
-	"log/slog"
 	"net/http"
 	"strings"
 	"time"
-
-	"github.com/google/uuid"
 )
 
 type (
@@ -26,13 +23,7 @@ func (handlerFunc FormHandlerFunc) call(w http.ResponseWriter, r *http.Request, 
 	resolverCtx := context.WithValue(r.Context(), requestContextKey{}, *render)
 	resolverReq := r.WithContext(resolverCtx)
 	guardedWriter := &guardedResponseWriter{ResponseWriter: w}
-	val, err := handlerFunc(guardedWriter, resolverReq)
-	if err != nil {
-		slog.Info("form handler returned error", "error", err)
-		return nil, err
-	}
-	slog.Info("form handler completed")
-	return val, nil
+	return handlerFunc(guardedWriter, resolverReq)
 }
 
 type errorTypeMapping struct {
@@ -94,19 +85,6 @@ func (r *Render) FormResponse() *FormResponse {
 }
 
 type requestContextKey struct{}
-
-type loggerContextKey struct{}
-
-func LoggerFromContext(ctx context.Context) *slog.Logger {
-	if logger, ok := ctx.Value(loggerContextKey{}).(*slog.Logger); ok {
-		return logger
-	}
-	return slog.Default()
-}
-
-func contextWithLogger(ctx context.Context, logger *slog.Logger) context.Context {
-	return context.WithValue(ctx, loggerContextKey{}, logger)
-}
 
 func (router *Router) Use(configFunc ...ConfFunc) {
 	for _, f := range configFunc {
@@ -227,16 +205,8 @@ func NewRouter(fs fs.FS) *Router {
 }
 
 func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	start := time.Now()
-	logger := slog.Default().With("request_id", uuid.New(), "method", r.Method, "path", r.URL.Path)
-	logger.Info("request started")
-	defer logger.Info("request completed", "duration_ms", time.Since(start).Milliseconds())
-
-	r = r.WithContext(contextWithLogger(r.Context(), logger))
-
 	if router.templates == nil || router.config.DevMode {
 		if err := router.ScanTemplates(); err != nil {
-			logger.Error("failed to scan templates", "error", err)
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			w.WriteHeader(http.StatusInternalServerError)
 			w.Write([]byte(fmt.Sprintf("error scanning templates: %s", err)))
@@ -249,7 +219,7 @@ func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		globals:       make(map[string]any),
 		handlerResult: &FormResponse{},
 	}
-	rootTemplate, _ := router.templates.Clone() // TODO handle error
+	rootTemplate, _ := router.templates.Clone()
 	renderFuncs := make(template.FuncMap)
 	for name, factory := range router.templateFuncs {
 		renderFuncs[name] = factory(render)
@@ -259,14 +229,11 @@ func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	render.layout = router.getLayout(r)
 	templateName, pathVariables, daveErr := router.parseRequestPath(r)
 	if daveErr != nil {
-		logger.Debug("template not found")
 		router.renderError(w, rootTemplate, daveErr)
 		return
 	}
 	render.template = templateName
 	render.pathVariables = pathVariables
-
-	logger.Debug("resolved template", "template", render.template, "path_variables", render.pathVariables)
 
 	for name, global := range router.globals {
 		render.globals[name] = global(render)
@@ -298,16 +265,14 @@ func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	data["path_variables"] = render.pathVariables
 
 	contentWriter := &strings.Builder{}
-	logger.Debug("rendering template", "template", render.template, "layout", render.layout)
 	err := rootTemplate.ExecuteTemplate(contentWriter, render.template, data)
 	if err != nil {
-		logger.Error("template execution failed", "template", render.template, "error", err)
 		router.renderError(w, rootTemplate, err)
 		return
 	}
 
 	if render.layout == "" {
-		w.Write([]byte(contentWriter.String())) // TODO handle error
+		w.Write([]byte(contentWriter.String()))
 		return
 	}
 
@@ -318,20 +283,16 @@ func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	pageWriter := &strings.Builder{}
 	err = rootTemplate.ExecuteTemplate(pageWriter, render.layout, layoutData)
 	if err != nil {
-		logger.Error("layout execution failed", "layout", render.layout, "error", err)
 		router.renderError(w, rootTemplate, err)
 		return
 	}
-	w.Write([]byte(pageWriter.String())) // TODO handle error
+	w.Write([]byte(pageWriter.String()))
 }
 
 func (router *Router) getLayout(r *http.Request) string {
 	layout := r.Header.Get("D-LAYOUT")
 	if layout == "" && router.layoutResolver != nil {
 		layout = router.layoutResolver(r)
-		if layout == "" {
-			slog.Debug("layout resolver returned empty string; rendering w/o layout")
-		}
 	} else if layout == "" {
 		layout = router.config.getDefaultLayout()
 	}
@@ -339,7 +300,6 @@ func (router *Router) getLayout(r *http.Request) string {
 		layout = strings.Join([]string{"layouts", layout}, "/")
 		layoutTemplate := router.templates.Lookup(layout)
 		if layoutTemplate == nil {
-			slog.Debug("layout not found; rendering w/o layout", "layout", layout)
 			layout = ""
 		}
 	}
@@ -350,12 +310,10 @@ func (router *Router) parseForm(r *http.Request) *daveError {
 	contentType := r.Header.Get("Content-Type")
 	if strings.HasPrefix(contentType, "multipart/form-data") {
 		if err := r.ParseMultipartForm(router.config.getMaxFormSize()); err != nil {
-			slog.Error("failed to parse multipart form", "error", err)
 			return Unexpected(fmt.Errorf("failed to parse multipart form: %w", err))
 		}
 	} else {
 		if err := r.ParseForm(); err != nil {
-			slog.Error("failed to parse form", "error", err)
 			return Unexpected(fmt.Errorf("failed to parse form: %w", err))
 		}
 	}
@@ -367,65 +325,34 @@ func (router *Router) getFormHandler(r *http.Request) (FormHandlerFunc, *daveErr
 	formHandlerKey := r.FormValue("d_form_handler")
 	if formHandlerKey == "" {
 		return nil, nil
-
 	}
-	slog.Info("executing form handler", "handler", formHandlerKey, "method", r.Method)
 	handler := router.formHandlers[formHandlerKey]
 	if handler == nil {
-		slog.Error("no registered handler", "handler", formHandlerKey)
 		return nil, Unexpected(fmt.Errorf("no registered handler: %s", formHandlerKey))
 	}
 	handlerMethod := handler[r.Method]
 	if handlerMethod == nil {
-		slog.Error("handler does not support method", "handler", formHandlerKey, "method", r.Method)
 		return nil, Unexpected(fmt.Errorf("handler %s does not support method: %s", formHandlerKey, r.Method))
 	}
 	return handlerMethod, nil
 }
 
-func (router *Router) handleTemplateError(w http.ResponseWriter, r *http.Request, rootTemplate *template.Template, err error) {
-	logger := LoggerFromContext(r.Context())
-	daveErr := router.mapCustomErrorType(err)
-	logger.Info("template error mapped to error type", "error_type", daveErr.message)
-	t := rootTemplate.Lookup(daveErr.fallback)
-	if t != nil {
-		data := map[string]any{"error": daveErr.cause}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(daveErr.status)
-		err = rootTemplate.ExecuteTemplate(w, daveErr.fallback, data)
-		if err != nil {
-			// log that something terrible has happened
-		}
-	} else {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.WriteHeader(daveErr.status)
-		w.Write([]byte(fmt.Sprintf("%s: %s", daveErr.message, daveErr.cause)))
-	}
-}
-
 func (router *Router) renderError(w http.ResponseWriter, rootTemplate *template.Template, err error) {
 	daveErr := router.mapCustomErrorType(err)
-	slog.Info("returning error response", "error_type", daveErr.message, "cause", daveErr.cause)
 	t := rootTemplate.Lookup(daveErr.fallback)
 	if t != nil {
 		data := map[string]any{"error": daveErr.cause}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(daveErr.status)
-		err := rootTemplate.ExecuteTemplate(w, daveErr.fallback, data)
-		if err != nil {
-			slog.Error("error rendering fallback template", "template", daveErr.fallback, "cause", err)
-		}
+		rootTemplate.ExecuteTemplate(w, daveErr.fallback, data)
 	} else {
-		slog.Error("cannot find fallback template", "template", daveErr.fallback)
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(daveErr.status)
 		w.Write([]byte(fmt.Sprintf("%v", daveErr.cause)))
 	}
-	return
 }
 
 func (router *Router) ScanTemplates() error {
-	slog.Info("scanning templates")
 	rootTemplate := template.New(time.Now().String())
 
 	placeholderFuncs := make(template.FuncMap)
@@ -439,7 +366,6 @@ func (router *Router) ScanTemplates() error {
 	var scanErr error
 	fs.WalkDir(root, ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			slog.Error("failed to walk directory", "path", path, "error", err)
 			scanErr = fmt.Errorf("failed to walk directory %s: %w", path, err)
 			return scanErr
 		}
@@ -447,31 +373,25 @@ func (router *Router) ScanTemplates() error {
 			return nil
 		}
 		if d.IsDir() {
-			slog.Debug("found directory", "dir", path)
 			return nil
 		}
 		if !strings.HasSuffix(path, ext) {
-			slog.Debug("skipping non-template file", "file", path)
 			return nil
 		}
-		slog.Debug("parsing template", "template", path)
 		newTemplate := rootTemplate.New(stripTemplateSuffix(path, ext))
 		file, err := root.Open(path)
 		if err != nil {
-			slog.Error("failed to open template file", "template", path, "error", err)
 			scanErr = fmt.Errorf("failed to open template file %s: %w", path, err)
 			return scanErr
 		}
 		defer file.Close()
 		content, err := io.ReadAll(file)
 		if err != nil {
-			slog.Error("failed to read template file", "template", path, "error", err)
 			scanErr = fmt.Errorf("failed to read template file %s: %w", path, err)
 			return scanErr
 		}
 		_, err = newTemplate.Parse(string(content))
 		if err != nil {
-			slog.Error("failed to parse template", "template", path, "error", err)
 			scanErr = fmt.Errorf("failed to parse template %s: %w", path, err)
 			return scanErr
 		}
@@ -480,7 +400,6 @@ func (router *Router) ScanTemplates() error {
 	if scanErr != nil {
 		return scanErr
 	}
-	slog.Info("template scanning complete", "count", len(rootTemplate.Templates()))
 	router.templates = rootTemplate
 	return nil
 }
@@ -615,14 +534,8 @@ func (router *Router) mapCustomErrorType(err error) *daveError {
 
 type guardedResponseWriter struct {
 	http.ResponseWriter
-	bodyWrote bool
 }
 
 func (g *guardedResponseWriter) Write(b []byte) (int, error) {
-	if !g.bodyWrote {
-		slog.Error("handler wrote to response body", "bytes", len(b))
-		g.bodyWrote = true
-	}
-	// Ignore the write but return success to avoid errors in handler
-	return len(b), nil
+	panic("dave: form handlers must not write to the response body")
 }
