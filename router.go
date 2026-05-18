@@ -19,11 +19,12 @@ type (
 	ConfFunc            func(router *Router)
 )
 
-func (handlerFunc FormHandlerFunc) call(w http.ResponseWriter, r *http.Request, render *Render) (any, error) {
+func (handlerFunc FormHandlerFunc) call(w http.ResponseWriter, r *http.Request, render *Render, allowWrites bool) (any, bool, error) {
 	resolverCtx := context.WithValue(r.Context(), requestContextKey{}, *render)
 	resolverReq := r.WithContext(resolverCtx)
-	guardedWriter := &guardedResponseWriter{ResponseWriter: w}
-	return handlerFunc(guardedWriter, resolverReq)
+	guardedWriter := &guardedResponseWriter{ResponseWriter: w, allowWrites: allowWrites}
+	result, err := handlerFunc(guardedWriter, resolverReq)
+	return result, guardedWriter.written, err
 }
 
 type errorTypeMapping struct {
@@ -99,10 +100,11 @@ func Config(c *Conf) ConfFunc {
 }
 
 type Conf struct {
-	DevMode           bool
-	DefaultLayout     string
-	TemplateExtension string
-	MaxFormSize       int64
+	DevMode            bool
+	DefaultLayout      string
+	TemplateExtension  string
+	MaxFormSize        int64
+	AllowHandlerWrites bool
 }
 
 func (c *Conf) getDefaultLayout() string {
@@ -246,9 +248,12 @@ func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if handler != nil {
-		handlerResult, err := handler.call(w, r, render)
+		handlerResult, handlerWrote, err := handler.call(w, r, render, router.config.AllowHandlerWrites)
 		if err != nil {
 			router.renderError(w, rootTemplate, err)
+			return
+		}
+		if handlerWrote {
 			return
 		}
 		render.handlerResult = handlerResult
@@ -534,8 +539,14 @@ func (router *Router) mapCustomErrorType(err error) *daveError {
 
 type guardedResponseWriter struct {
 	http.ResponseWriter
+	allowWrites bool
+	written     bool
 }
 
 func (g *guardedResponseWriter) Write(b []byte) (int, error) {
-	panic("dave: form handlers must not write to the response body")
+	if !g.allowWrites {
+		panic("dave: form handlers must not write to the response body")
+	}
+	g.written = true
+	return g.ResponseWriter.Write(b)
 }

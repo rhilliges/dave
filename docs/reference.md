@@ -86,12 +86,13 @@ func Config(c *Conf) ConfFunc
 
 ### Conf struct
 
-| Field               | Type     | Default     | Description                       |
-| ------------------- | -------- | ----------- | --------------------------------- |
-| `DevMode`           | `bool`   | `false`     | Rescan templates on every request |
-| `DefaultLayout`     | `string` | `"default"` | Layout name when none specified   |
-| `TemplateExtension` | `string` | `".tmpl"`   | File extension for templates      |
-| `MaxFormSize`       | `int64`  | `32MB`      | Max size for multipart forms      |
+| Field                | Type     | Default     | Description                                          |
+| -------------------- | -------- | ----------- | ---------------------------------------------------- |
+| `DevMode`            | `bool`   | `false`     | Rescan templates on every request                    |
+| `DefaultLayout`      | `string` | `"default"` | Layout name when none specified                      |
+| `TemplateExtension`  | `string` | `".tmpl"`   | File extension for templates                         |
+| `MaxFormSize`        | `int64`  | `32MB`      | Max size for multipart forms                         |
+| `AllowHandlerWrites` | `bool`   | `false`     | Allow handlers to write directly, skipping templates |
 
 **Example:**
 
@@ -289,28 +290,44 @@ dave.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
 
 ### Response Writer Rules
 
-Handlers can set headers and status codes but should NOT write to the response body.
+By default, handlers can set headers and status codes but must NOT write to the response body. If a handler calls `w.Write()`, **Dave will panic**:
 
-Dave wraps the response writer to prevent handlers from bypassing template rendering. If a handler calls `w.Write()`:
-
-1. The write is silently ignored (returns success to avoid handler errors)
-2. An error is logged: `"handler wrote to response body"`
-3. Template rendering proceeds normally
-
-```go
-// OK - set headers and status
-w.Header().Set("HX-Location", "/users")
-w.WriteHeader(http.StatusCreated)
-return user, nil
-
-// NOT OK - write is ignored and logged as error
-w.Write([]byte("..."))  // Does nothing, logged as error
-
-// NOT OK - streaming responses not supported
-http.ServeFile(w, r, "file.pdf")  // Won't work as expected
+```
+dave: form handlers must not write to the response body
 ```
 
-If you need to bypass template rendering entirely (e.g., for file downloads or API responses), use standard Go handlers outside of Dave's router.
+#### AllowHandlerWrites
+
+Set `AllowHandlerWrites: true` to let handlers write directly to the response, skipping template rendering. This is useful e.g. for HTMX responses that return small HTML fragments:
+
+```go
+r.Use(
+    dave.Config(&dave.Conf{
+        AllowHandlerWrites: true,
+    }),
+)
+
+dave.FormHandler("deleteUser",
+    dave.Delete(func(w http.ResponseWriter, r *http.Request) (any, error) {
+        db.DeleteUser(r.FormValue("id"))
+        w.Write([]byte("")) // Return empty to remove element
+        return nil, nil
+    }),
+)
+
+dave.FormHandler("toggleLike",
+    dave.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
+        count := db.ToggleLike(r.FormValue("id"))
+        fmt.Fprintf(w, `<span class="likes">%d</span>`, count)
+        return nil, nil
+    }),
+)
+```
+
+When `AllowHandlerWrites` is enabled:
+
+- If handler writes to body → response is sent as-is, template rendering is skipped
+- If handler doesn't write → template renders normally
 
 ---
 

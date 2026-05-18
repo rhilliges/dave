@@ -1025,6 +1025,67 @@ func TestRouter_PanicsWhenHandlerWritesToResponseBody(t *testing.T) {
 	})
 }
 
+func TestRouter_AllowHandlerWrites_SkipsTemplateRendering(t *testing.T) {
+	templates := []testTemplate{
+		{"path/to/index.tmpl", "template-content"},
+	}
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
+	router.Use(
+		Config(&Conf{
+			AllowHandlerWrites: true,
+		}),
+		FormHandler("writeBody",
+			Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
+				w.Write([]byte("direct write"))
+				return "handler-result", nil
+			}),
+		),
+	)
+
+	data := url.Values{}
+	data.Add("d_form_handler", "writeBody")
+	req := httptest.NewRequest("GET", "/path/to?"+data.Encode(), nil)
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	resp := rec.Result()
+	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, "direct write", string(body))
+}
+
+func TestRouter_AllowHandlerWrites_RendersTemplateWhenHandlerDoesNotWrite(t *testing.T) {
+	templates := []testTemplate{
+		{"path/to/index.tmpl", "template-content"},
+	}
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
+	router.Use(
+		Config(&Conf{
+			AllowHandlerWrites: true,
+		}),
+		FormHandler("noWrite",
+			Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
+				return "handler-result", nil
+			}),
+		),
+	)
+
+	data := url.Values{}
+	data.Add("d_form_handler", "noWrite")
+	req := httptest.NewRequest("GET", "/path/to?"+data.Encode(), nil)
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	resp := rec.Result()
+	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, "template-content", string(body))
+}
+
 func TestRouter_DX_RescanTemplates(t *testing.T) {
 	templates := []testTemplate{
 		{"path/index.tmpl", ""},

@@ -233,10 +233,11 @@ Use in templates: `{{upper .user.Name}}`
 ```go
 r.Use(
     dave.Config(&dave.Conf{
-        DevMode:           true,     // Reload templates on every request
-        DefaultLayout:     "main",   // Default: "default"
-        TemplateExtension: ".html",  // Default: ".tmpl"
-        MaxFormSize:       10 << 20, // Default: 32MB
+        DevMode:            true,     // Reload templates on every request
+        DefaultLayout:      "main",   // Default: "default"
+        TemplateExtension:  ".html",  // Default: ".tmpl"
+        MaxFormSize:        10 << 20, // Default: 32MB
+        AllowHandlerWrites: true,     // Allow handlers to bypass templates
     }),
 )
 ```

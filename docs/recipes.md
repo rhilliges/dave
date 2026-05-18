@@ -45,14 +45,28 @@ Use `hx-vals` to pass the form handler name:
 </form>
 ```
 
-Redirect after form submission:
+For simple HTMX responses that don't need a template, enable `AllowHandlerWrites` to return HTML fragments directly:
 
 ```go
-dave.FormHandler("createUser",
+r.Use(
+    dave.Config(&dave.Conf{
+        AllowHandlerWrites: true,
+    }),
+)
+
+dave.FormHandler("toggleLike",
     dave.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
-        user := db.CreateUser(r.FormValue("name"))
-        w.Header().Set("HX-Location", "/users/"+user.ID)
-        return user, nil
+        count := db.ToggleLike(r.FormValue("id"))
+        fmt.Fprintf(w, `<span class="likes">%d</span>`, count)
+        return nil, nil
+    }),
+)
+
+dave.FormHandler("deleteItem",
+    dave.Delete(func(w http.ResponseWriter, r *http.Request) (any, error) {
+        db.DeleteItem(r.FormValue("id"))
+        w.Write([]byte("")) // Return empty to remove element with hx-swap="outerHTML"
+        return nil, nil
     }),
 )
 ```
