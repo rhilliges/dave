@@ -1477,3 +1477,103 @@ func (a *AuthService) CurrentUser() (*User, error) {
 type User struct {
 	Name string
 }
+
+func TestRouter_BadRequestError(t *testing.T) {
+	templates := []testTemplate{
+		{"v1/{var1}/v2/{var2}/index.tmpl", ""},
+	}
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
+	router.Use(Config(&Conf{DevMode: true}))
+
+	data := url.Values{}
+	data.Add("d_form_handler", "var1")
+	req := httptest.NewRequest("GET", "/v1/value1/v2/value2?"+data.Encode(), nil)
+	rec := httptest.NewRecorder()
+
+	router.Use(
+		FormHandler(
+			"var1",
+			Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
+				return nil, BadRequest(fmt.Errorf("invalid input: missing required field"))
+			}),
+		),
+	)
+
+	router.ServeHTTP(rec, req)
+
+	resp := rec.Result()
+	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	assert.Equal(t, "invalid input: missing required field", string(body))
+}
+
+func TestRouter_BadRequestErrorFallback(t *testing.T) {
+	templates := []testTemplate{
+		{"v1/{var1}/v2/{var2}/index.tmpl", ""},
+		{"fallback/bad_request.tmpl", "400, bad request: {{.error}}"},
+	}
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
+	data := url.Values{}
+	data.Add("d_form_handler", "var1")
+	req := httptest.NewRequest("GET", "/v1/value1/v2/value2?"+data.Encode(), nil)
+	rec := httptest.NewRecorder()
+
+	router.Use(
+		FormHandler(
+			"var1",
+			Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
+				return nil, BadRequest(fmt.Errorf("invalid input: missing required field"))
+			}),
+		),
+	)
+
+	router.ServeHTTP(rec, req)
+
+	resp := rec.Result()
+	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	assert.Equal(t, "text/html; charset=utf-8", resp.Header.Get("Content-Type"))
+	assert.Equal(t, "400, bad request: invalid input: missing required field", string(body))
+}
+
+func TestRouter_MalformedFormData_ReturnsBadRequest(t *testing.T) {
+	templates := []testTemplate{
+		{"index.tmpl", "ok"},
+	}
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
+	router.Use(Config(&Conf{DevMode: true}))
+
+	req := httptest.NewRequest("POST", "/", strings.NewReader("%%%invalid"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	resp := rec.Result()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+func TestRouter_MalformedMultipartForm_ReturnsBadRequest(t *testing.T) {
+	templates := []testTemplate{
+		{"index.tmpl", "ok"},
+	}
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
+	router.Use(Config(&Conf{DevMode: true}))
+
+	req := httptest.NewRequest("POST", "/", strings.NewReader("not valid multipart data"))
+	req.Header.Set("Content-Type", "multipart/form-data; boundary=something")
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	resp := rec.Result()
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}

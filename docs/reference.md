@@ -125,15 +125,17 @@ router.Use(
 
 ### Builtin Error Types
 
-Dave provides two builtin error types for common cases:
+Dave provides three builtin error types for common cases:
 
 | Function                  | Status | Fallback Template                |
 | ------------------------- | ------ | -------------------------------- |
+| `BadRequest(cause error)` | 400    | `fallback/bad_request.tmpl`      |
 | `NotFound(cause error)`   | 404    | `fallback/not_found.tmpl`        |
 | `Unexpected(cause error)` | 500    | `fallback/unexpected_error.tmpl` |
 
 Dave uses these internally:
 
+- `BadRequest` is returned when form parsing fails (malformed form data)
 - `NotFound` is returned when a request path doesn't match any template
 - `Unexpected` is returned for template parsing errors, unregistered form handlers, and other internal errors
 
@@ -142,6 +144,9 @@ They can also be used in registered handlers:
 ```go
 dave.Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
     id := dave.PathVariable(r, "id")
+    if id == "" {
+        return nil, dave.BadRequest(fmt.Errorf("id is required"))
+    }
     user, err := db.GetUser(id)
     if err != nil {
         return nil, dave.Unexpected(err)

@@ -321,18 +321,20 @@ func (router *Router) parseForm(r *http.Request) *daveError {
 	contentType := r.Header.Get("Content-Type")
 	if strings.HasPrefix(contentType, "multipart/form-data") {
 		if err := r.ParseMultipartForm(router.config.getMaxFormSize()); err != nil {
-			return Unexpected(fmt.Errorf("failed to parse multipart form: %w", err))
+			return BadRequest(fmt.Errorf("failed to parse multipart form: %w", err))
 		}
 	} else {
 		if err := r.ParseForm(); err != nil {
-			return Unexpected(fmt.Errorf("failed to parse form: %w", err))
+			return BadRequest(fmt.Errorf("failed to parse form: %w", err))
 		}
 	}
 	return nil
 }
 
 func (router *Router) getFormHandler(r *http.Request) (FormHandlerFunc, *daveError) {
-	router.parseForm(r)
+	if err := router.parseForm(r); err != nil {
+		return nil, err
+	}
 	formHandlerKey := r.FormValue("d_form_handler")
 	if formHandlerKey == "" {
 		return nil, nil
@@ -538,6 +540,15 @@ func Unexpected(cause error) *daveError {
 		fallback: "fallback/unexpected_error",
 		cause:    cause,
 		status:   http.StatusInternalServerError,
+	}
+}
+
+func BadRequest(cause error) *daveError {
+	return &daveError{
+		message:  "bad request",
+		fallback: "fallback/bad_request",
+		cause:    cause,
+		status:   http.StatusBadRequest,
 	}
 }
 

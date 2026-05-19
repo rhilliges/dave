@@ -166,6 +166,9 @@ Handler results are available as `{{.result}}` in templates. See [Form Handling]
 Return typed errors for proper HTTP status codes:
 
 ```go
+// 400 - renders fallback/bad_request.tmpl
+return nil, dave.BadRequest(fmt.Errorf("invalid input"))
+
 // 404 - renders fallback/not_found.tmpl
 return nil, dave.NotFound(fmt.Errorf("user not found"))
 
