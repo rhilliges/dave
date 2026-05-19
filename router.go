@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -40,7 +41,6 @@ type Router struct {
 	templateFuncs  map[string]func(*Render) any
 	templates      *template.Template
 	config         *Conf
-	lastRender     *Render
 	layoutResolver LayoutResolverFunc
 	errorTypes     []errorTypeMapping
 }
@@ -123,7 +123,7 @@ func (c *Conf) getTemplateExtension() string {
 
 func (c *Conf) getMaxFormSize() int64 {
 	if c.MaxFormSize == 0 {
-		return 32 << 20 // 32MB default
+		return 10 << 20 // 10MB default
 	}
 	return c.MaxFormSize
 }
@@ -211,7 +211,11 @@ func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if err := router.ScanTemplates(); err != nil {
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte(fmt.Sprintf("error scanning templates: %s", err)))
+			if router.config.DevMode {
+				w.Write([]byte(fmt.Sprintf("error scanning templates: %s", err)))
+			} else {
+				w.Write([]byte("internal server error"))
+			}
 			return
 		}
 	}
@@ -277,6 +281,7 @@ func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if render.layout == "" {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Write([]byte(contentWriter.String()))
 		return
 	}
@@ -291,14 +296,15 @@ func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		router.renderError(w, rootTemplate, err)
 		return
 	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Write([]byte(pageWriter.String()))
 }
 
 func (router *Router) getLayout(r *http.Request) string {
-	layout := r.Header.Get("D-LAYOUT")
-	if layout == "" && router.layoutResolver != nil {
+	var layout string
+	if router.layoutResolver != nil {
 		layout = router.layoutResolver(r)
-	} else if layout == "" {
+	} else {
 		layout = router.config.getDefaultLayout()
 	}
 	if layout != "" {
@@ -333,11 +339,17 @@ func (router *Router) getFormHandler(r *http.Request) (FormHandlerFunc, *daveErr
 	}
 	handler := router.formHandlers[formHandlerKey]
 	if handler == nil {
-		return nil, Unexpected(fmt.Errorf("no registered handler: %s", formHandlerKey))
+		if router.config.DevMode {
+			return nil, Unexpected(fmt.Errorf("no registered handler: %s", formHandlerKey))
+		}
+		return nil, Unexpected(fmt.Errorf("invalid form handler"))
 	}
 	handlerMethod := handler[r.Method]
 	if handlerMethod == nil {
-		return nil, Unexpected(fmt.Errorf("handler %s does not support method: %s", formHandlerKey, r.Method))
+		if router.config.DevMode {
+			return nil, Unexpected(fmt.Errorf("handler %s does not support method: %s", formHandlerKey, r.Method))
+		}
+		return nil, Unexpected(fmt.Errorf("invalid form handler"))
 	}
 	return handlerMethod, nil
 }
@@ -353,7 +365,11 @@ func (router *Router) renderError(w http.ResponseWriter, rootTemplate *template.
 	} else {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(daveErr.status)
-		w.Write([]byte(fmt.Sprintf("%v", daveErr.cause)))
+		if router.config.DevMode {
+			w.Write([]byte(fmt.Sprintf("%v", daveErr.cause)))
+		} else {
+			w.Write([]byte(daveErr.message))
+		}
 	}
 }
 
@@ -413,6 +429,8 @@ func (router *Router) parseRequestPath(r *http.Request) (string, map[string]stri
 	path := r.Header.Get("D-TEMPLATE")
 	if path == "" {
 		path = "index"
+	} else if !isValidTemplateName(path) {
+		return "", nil, NotFound(fmt.Errorf("invalid template name"))
 	}
 	path = strings.TrimSuffix(r.URL.Path, "/") + "/" + path
 	reqSegments := strings.Split(path[1:], "/")
@@ -464,21 +482,33 @@ func stripTemplateSuffix(t string, ext string) string {
 	return t[:i]
 }
 
-// GetRender retrieves the Render context from the request context.
-// Use this in form handlers to access path variables, globals, and other render information.
-func GetRender(context context.Context) Render {
-	return context.Value(requestContextKey{}).(Render)
+var validTemplateNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+
+func isValidTemplateName(name string) bool {
+	return validTemplateNamePattern.MatchString(name)
 }
 
-// PathVariable retrieves a path variable from the request context by name.
-func PathVariable(r *http.Request, varName string) any {
-	render := r.Context().Value(requestContextKey{}).(Render)
+func GetRender(context context.Context) *Render {
+	render, ok := context.Value(requestContextKey{}).(Render)
+	if !ok {
+		return nil
+	}
+	return &render
+}
+
+func PathVariable(r *http.Request, varName string) string {
+	render, ok := r.Context().Value(requestContextKey{}).(Render)
+	if !ok {
+		return ""
+	}
 	return render.pathVariables[varName]
 }
 
-// GlobalValue retrieves a global value from the request context by name.
 func GlobalValue(r *http.Request, name string) any {
-	render := r.Context().Value(requestContextKey{}).(Render)
+	render, ok := r.Context().Value(requestContextKey{}).(Render)
+	if !ok {
+		return nil
+	}
 	return render.globals[name]
 }
 

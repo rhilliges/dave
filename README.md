@@ -46,8 +46,8 @@ import (
 )
 
 func main() {
-    r := dave.NewRouter(os.DirFS("templates"))
-    http.ListenAndServe(":8080", r)
+    router := dave.NewRouter(os.DirFS("templates"))
+    http.ListenAndServe(":8080", router)
 }
 ```
 
@@ -81,7 +81,7 @@ Access in templates: `{{.path_variables.id}}`
 Share data across all templates:
 
 ```go
-r.Use(
+router.Use(
     dave.Global("currentUser", func(render *dave.Render) any {
         token := render.Request().Header.Get("Authorization")
         return auth.GetUser(token)
@@ -94,7 +94,7 @@ Access in templates: `{{.globals.currentUser.Name}}`
 Register a service object with methods you can call from templates:
 
 ```go
-r.Use(
+router.Use(
     dave.Global("users", func(render *dave.Render) any {
         return userService  // has Get(id), All(), etc.
     }),
@@ -111,7 +111,7 @@ r.Use(
 Or access path variables to load data for the current page:
 
 ```go
-r.Use(
+router.Use(
     dave.Global("user", func(render *dave.Render) any {
         id := render.PathVariables()["id"]
         if id == "" {
@@ -138,7 +138,7 @@ Then in `templates/users/{id}/index.tmpl`:
 Process form submissions:
 
 ```go
-r.Use(
+router.Use(
     dave.FormHandler("createPost",
         dave.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
             title := r.FormValue("title")
@@ -186,7 +186,7 @@ Register custom error types for domain-specific errors:
 ```go
 var ErrUnauthorized = errors.New("unauthorized")
 
-r.Use(
+router.Use(
     dave.ErrorType(ErrUnauthorized, http.StatusUnauthorized, "unauthorized"),
 )
 ```
@@ -217,7 +217,7 @@ Page templates automatically render inside `{{.content}}`.
 Add custom functions:
 
 ```go
-r.Use(
+router.Use(
     dave.Func("upper", func(render *dave.Render) any {
         return func(s string) string {
             return strings.ToUpper(s)
@@ -231,12 +231,12 @@ Use in templates: `{{upper .user.Name}}`
 ### Configuration
 
 ```go
-r.Use(
+router.Use(
     dave.Config(&dave.Conf{
         DevMode:            true,     // Reload templates on every request
         DefaultLayout:      "main",   // Default: "default"
         TemplateExtension:  ".html",  // Default: ".tmpl"
-        MaxFormSize:        10 << 20, // Default: 32MB
+        MaxFormSize:        32 << 20, // Default: 10MB
         AllowHandlerWrites: true,     // Allow handlers to bypass templates
     }),
 )
@@ -244,7 +244,7 @@ r.Use(
 
 ### Components
 
-Reuse templates with Go's built-in `{{template}}`:
+Reuse templates with Go's built-in `{{template}}`. Reference templates by their path (without extension):
 
 ```html
 <!-- templates/components/button.tmpl -->
@@ -254,16 +254,17 @@ Reuse templates with Go's built-in `{{template}}`:
 {{template "components/button" "Click Me"}}
 ```
 
-### Template Data Reference
+Any template can reference any other template by its full path:
 
-| Variable                   | Description                           |
-| -------------------------- | ------------------------------------- |
-| `{{.globals.name}}`        | Global values                         |
-| `{{.path_variables.name}}` | URL path variables                    |
-| `{{.result}}`              | Form handler return value             |
-| `{{.form}}`                | Form state (when using FormResponse)  |
-| `{{.content}}`             | Page content (in layouts)             |
-| `{{.error}}`               | Error message (in fallback templates) |
+```html
+<!-- templates/users/profile/index.tmpl -->
+{{template "components/avatar" .globals.user}}
+{{template "shared/sidebar" .}}
+```
+
+## Security
+
+See [Security Considerations](docs/reference.md#security-considerations) for details.
 
 ## Learn More
 

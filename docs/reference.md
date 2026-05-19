@@ -2,13 +2,22 @@
 
 Reference documentation for Dave, a file-based router for Go.
 
+## Naming Conventions
+
+Dave uses the `d_` and `D-` prefixes for its reserved names:
+
+- **`d_form_handler`** - Form field name that specifies which handler to invoke
+- **`D-TEMPLATE`** - HTTP header to override which template to render (must be alphanumeric, hyphens, or underscores only)
+
+The `d` stands for "Dave". These prefixes help avoid conflicts with your application's own field names and headers.
+
 ## Table of Contents
 
 - [Router](#router)
 - [Configuration](#configuration)
+- [Error Handling](#error-handling)
 - [Globals](#globals)
 - [Form Handling](#form-handling)
-- [Error Handling](#error-handling)
 - [Layouts](#layouts)
 - [Template Functions](#template-functions)
 - [Request Lifecycle](#request-lifecycle)
@@ -17,6 +26,7 @@ Reference documentation for Dave, a file-based router for Go.
 - [Logging](#logging)
 - [Advanced API](#advanced-api)
 - [Template Data Reference](#template-data-reference)
+- [Security Considerations](#security-considerations)
 
 ---
 
@@ -33,12 +43,14 @@ func NewRouter(fs fs.FS) *Router
 **Example:**
 
 ```go
-r := dave.NewRouter(os.DirFS("templates"))
+router := dave.NewRouter(os.DirFS("templates"))
 ```
 
 ### Use
 
-Registers configuration functions with the router.
+### Use
+
+Registers configuration functions with the router. `ConfFunc` is a function type that configures the router - all of Dave's configuration helpers (`Config`, `Global`, `FormHandler`, etc.) return `ConfFunc`.
 
 ```go
 func (router *Router) Use(configFunc ...ConfFunc)
@@ -47,7 +59,7 @@ func (router *Router) Use(configFunc ...ConfFunc)
 **Example:**
 
 ```go
-r.Use(
+router.Use(
     dave.Config(&dave.Conf{DevMode: true}),
     dave.Global("app", func(r *dave.Render) any { return appConfig }),
     dave.FormHandler("submit", dave.Post(handler)),
@@ -65,11 +77,11 @@ func (router *Router) ScanTemplates() error
 **Example:**
 
 ```go
-r := dave.NewRouter(fs)
-if err := r.ScanTemplates(); err != nil {
+router := dave.NewRouter(fs)
+if err := router.ScanTemplates(); err != nil {
     log.Fatal(err)  // Catch template errors early
 }
-http.ListenAndServe(":8080", r)
+http.ListenAndServe(":8080", router)
 ```
 
 ---
@@ -91,13 +103,13 @@ func Config(c *Conf) ConfFunc
 | `DevMode`            | `bool`   | `false`     | Rescan templates on every request                    |
 | `DefaultLayout`      | `string` | `"default"` | Layout name when none specified                      |
 | `TemplateExtension`  | `string` | `".tmpl"`   | File extension for templates                         |
-| `MaxFormSize`        | `int64`  | `32MB`      | Max size for multipart forms                         |
+| `MaxFormSize`        | `int64`  | `10MB`      | Max size for multipart forms                         |
 | `AllowHandlerWrites` | `bool`   | `false`     | Allow handlers to write directly, skipping templates |
 
 **Example:**
 
 ```go
-r.Use(
+router.Use(
     dave.Config(&dave.Conf{
         DevMode:           true,
         DefaultLayout:     "main",
@@ -109,11 +121,132 @@ r.Use(
 
 ---
 
+## Error Handling
+
+### Builtin Error Types
+
+Dave provides two builtin error types for common cases:
+
+| Function                  | Status | Fallback Template                |
+| ------------------------- | ------ | -------------------------------- |
+| `NotFound(cause error)`   | 404    | `fallback/not_found.tmpl`        |
+| `Unexpected(cause error)` | 500    | `fallback/unexpected_error.tmpl` |
+
+Dave uses these internally:
+
+- `NotFound` is returned when a request path doesn't match any template
+- `Unexpected` is returned for template parsing errors, unregistered form handlers, and other internal errors
+
+They can also be used in registered handlers:
+
+```go
+dave.Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
+    id := dave.PathVariable(r, "id")
+    user, err := db.GetUser(id)
+    if err != nil {
+        return nil, dave.Unexpected(err)
+    }
+    if user == nil {
+        return nil, dave.NotFound(fmt.Errorf("user %s not found", id))
+    }
+    return user, nil
+})
+```
+
+Create fallback templates in `templates/fallback/`:
+
+```html
+<!-- templates/fallback/not_found.tmpl -->
+<h1>404 - Not Found</h1>
+<p>{{.error}}</p>
+<a href="/">Go Home</a>
+```
+
+### ErrorType
+
+In addition to built-in errors, Dave allows registering of custom error types.
+
+```go
+func ErrorType(target error, status int, fallbackName string) ConfFunc
+```
+
+When an error matches (or wraps) the target error, Dave will:
+
+1. Set the HTTP status code
+2. Render `fallback/<fallbackName>.tmpl` if it exists
+3. Otherwise return a plain text response
+
+**Wrapped errors are fully supported.** Dave uses `errors.Unwrap()` to check the entire error chain, so `fmt.Errorf("failed: %w", ErrUnauthorized)` will still match `ErrUnauthorized`.
+
+**Setup:**
+
+```go
+var ErrUnauthorized = errors.New("unauthorized")
+var ErrForbidden = errors.New("forbidden")
+
+router.Use(
+    dave.ErrorType(ErrUnauthorized, http.StatusUnauthorized, "unauthorized"),
+    dave.ErrorType(ErrForbidden, http.StatusForbidden, "forbidden"),
+)
+```
+
+Create corresponding fallback templates:
+
+```html
+<!-- templates/fallback/unauthorized.tmpl -->
+<h1>401 - Unauthorized</h1>
+<p>Please <a href="/login">log in</a> to continue.</p>
+```
+
+**In form handlers:**
+
+```go
+dave.Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
+    user := auth.GetUser(r)
+    if user == nil {
+        return nil, ErrUnauthorized
+    }
+    if !user.HasPermission("admin") {
+        return nil, fmt.Errorf("user %s lacks permission: %w", user.ID, ErrForbidden)
+    }
+    return user, nil
+})
+```
+
+**In globals:**
+
+Custom error types also work with globals. If a global returns an object with methods that return errors, Dave maps them to the appropriate error type.
+
+```go
+type AuthService struct{}
+
+func (a *AuthService) CurrentUser() (*User, error) {
+    return nil, ErrUnauthorized
+}
+
+router.Use(
+    dave.Global("auth", func(render *dave.Render) any {
+        return &AuthService{}
+    }),
+)
+```
+
+In templates:
+
+```html
+<!-- Triggers unauthorized fallback if no user is logged in -->
+{{.globals.auth.CurrentUser.Name}}
+```
+
+When the template calls `.CurrentUser` and it returns `ErrUnauthorized`, Dave catches the error and renders `fallback/unauthorized.tmpl` with a 401 status code.
+
+---
+
 ## Globals
 
 ### Global
 
-Registers a global value provider. Globals are evaluated on every request.
+Registers a global value provider. Globals are evaluated on every request and are available in templates via `{{.globals.name}}`.
 
 ```go
 func Global(name string, globalFunc func(render *Render) any) ConfFunc
@@ -122,7 +255,7 @@ func Global(name string, globalFunc func(render *Render) any) ConfFunc
 **Example:**
 
 ```go
-r.Use(
+router.Use(
     dave.Global("currentUser", func(render *dave.Render) any {
         token := render.Request().Header.Get("Authorization")
         return auth.GetUserFromToken(token)
@@ -142,7 +275,7 @@ r.Use(
 
 ### GlobalValue
 
-Retrieves a global value in a form handler. Use this to access globals that were registered with `Global()`.
+Retrieves a global value inside a form handler. This is the handler-side counterpart to `Global()` - use `Global()` to register values, and `GlobalValue()` to access them in handlers.
 
 ```go
 func GlobalValue(r *http.Request, name string) any
@@ -189,10 +322,10 @@ func(w http.ResponseWriter, r *http.Request) (any, error)
 **Example:**
 
 ```go
-r.Use(
+router.Use(
     dave.FormHandler("user",
         dave.Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
-            id := dave.PathVariable(r, "id").(string)
+            id := dave.PathVariable(r, "id")
             return db.GetUser(id)
         }),
         dave.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
@@ -200,7 +333,7 @@ r.Use(
             return user, nil
         }),
         dave.Delete(func(w http.ResponseWriter, r *http.Request) (any, error) {
-            id := dave.PathVariable(r, "id").(string)
+            id := dave.PathVariable(r, "id")
             return nil, db.DeleteUser(id)
         }),
     ),
@@ -235,7 +368,7 @@ func NewFormResponse() *FormResponse
 **FormResponse fields:**
 
 - `State` — `map[string][]string` for preserving form values
-- `Errors` — Field validation errors
+- `ValidationErrors` — Field validation errors
 - `Result` — Success result data
 
 **Example:**
@@ -246,6 +379,8 @@ dave.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
 
     // Preserve submitted values
     form.State["email"] = []string{r.FormValue("email")}
+    // or
+    form.State = r.Form
 
     // Validate
     if r.FormValue("email") == "" {
@@ -273,7 +408,7 @@ dave.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
 | `{{.form.Errors "field"}}`          | `[]string` | Error messages for field  |
 | `{{.form.Value "field" "default"}}` | `string`   | Field value or default    |
 | `{{.form.Values "field"}}`          | `[]string` | All values (multi-select) |
-| `{{.form.Result}}`                  | `any`      | Same as `{{.result}}`     |
+| `{{.form.Result}}`                  | `any`      | Same as `{{.result}}` if handler returns FormResponse     |
 
 **Template example:**
 
@@ -296,12 +431,14 @@ By default, handlers can set headers and status codes but must NOT write to the 
 dave: form handlers must not write to the response body
 ```
 
+This panic is intentional to prevent accidental response corruption. If your server doesn't have panic recovery middleware, this will crash the process. Either enable `AllowHandlerWrites` or ensure your handlers don't write to the response body.
+
 #### AllowHandlerWrites
 
 Set `AllowHandlerWrites: true` to let handlers write directly to the response, skipping template rendering. This is useful e.g. for HTMX responses that return small HTML fragments:
 
 ```go
-r.Use(
+router.Use(
     dave.Config(&dave.Conf{
         AllowHandlerWrites: true,
     }),
@@ -328,127 +465,6 @@ When `AllowHandlerWrites` is enabled:
 
 - If handler writes to body → response is sent as-is, template rendering is skipped
 - If handler doesn't write → template renders normally
-
----
-
-## Error Handling
-
-### Builtin Error Types
-
-Dave provides two builtin error types for common cases:
-
-| Function                  | Status | Fallback Template                |
-| ------------------------- | ------ | -------------------------------- |
-| `NotFound(cause error)`   | 404    | `fallback/not_found.tmpl`        |
-| `Unexpected(cause error)` | 500    | `fallback/unexpected_error.tmpl` |
-
-Dave uses these internally:
-
-- `NotFound` is returned when a request path doesn't match any template
-- `Unexpected` is returned for template parsing errors, unregistered form handlers, and other internal errors
-
-They can also be used in registered handlers:
-
-```go
-dave.Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
-    id := dave.PathVariable(r, "id").(string)
-    user, err := db.GetUser(id)
-    if err != nil {
-        return nil, dave.Unexpected(err)
-    }
-    if user == nil {
-        return nil, dave.NotFound(fmt.Errorf("user %s not found", id))
-    }
-    return user, nil
-})
-```
-
-Create fallback templates in `templates/fallback/`:
-
-```html
-<!-- templates/fallback/not_found.tmpl -->
-<h1>404 - Not Found</h1>
-<p>{{.error}}</p>
-<a href="/">Go Home</a>
-```
-
-### ErrorType
-
-In addition to built in errors, Dave allows registering of custom error types.
-
-```go
-func ErrorType(target error, status int, fallbackName string) ConfFunc
-```
-
-When an error occurs (or an error wrapping the target), Dave will:
-
-1. Set the HTTP status code
-2. Render `fallback/<fallbackName>.tmpl` if it exists
-3. Otherwise return a plain text response
-
-**Setup:**
-
-```go
-var ErrUnauthorized = errors.New("unauthorized")
-var ErrForbidden = errors.New("forbidden")
-
-r.Use(
-    dave.ErrorType(ErrUnauthorized, http.StatusUnauthorized, "unauthorized"),
-    dave.ErrorType(ErrForbidden, http.StatusForbidden, "forbidden"),
-)
-```
-
-Create corresponding fallback templates:
-
-```html
-<!-- templates/fallback/unauthorized.tmpl -->
-<h1>401 - Unauthorized</h1>
-<p>Please <a href="/login">log in</a> to continue.</p>
-```
-
-Wrapped errors are supported—Dave unwraps errors to find matches.
-
-**In form handlers:**
-
-```go
-dave.Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
-    user := auth.GetUser(r)
-    if user == nil {
-        return nil, ErrUnauthorized
-    }
-    if !user.HasPermission("admin") {
-        return nil, fmt.Errorf("user %s lacks permission: %w", user.ID, ErrForbidden)
-    }
-    return user, nil
-})
-```
-
-**In globals:**
-
-Custom error types also work with globals. If a global returns an object with methods that return errors, Dave maps them to the appropriate error type.
-
-```go
-type AuthService struct{}
-
-func (a *AuthService) CurrentUser() (*User, error) {
-    return nil, ErrUnauthorized
-}
-
-r.Use(
-    dave.Global("auth", func(render *dave.Render) any {
-        return &AuthService{}
-    }),
-)
-```
-
-In templates:
-
-```html
-<!-- Triggers unauthorized fallback if no user is logged in -->
-{{.globals.auth.CurrentUser.Name}}
-```
-
-When the template calls `.CurrentUser` and it returns `ErrUnauthorized`, Dave catches the error and renders `fallback/unauthorized.tmpl` with a 401 status code.
 
 ---
 
@@ -483,7 +499,7 @@ func LayoutResolver(resolver LayoutResolverFunc) ConfFunc
 **Example:**
 
 ```go
-r.Use(
+router.Use(
     dave.LayoutResolver(func(r *http.Request) string {
         // No layout for HTMX partial requests
         if r.Header.Get("HX-Request") == "true" {
@@ -500,12 +516,11 @@ r.Use(
 
 ### Layout Priority
 
-1. `D-LAYOUT` header (highest)
-2. Layout resolver function
-3. `DefaultLayout` config
-4. `"default"` (if exists)
+1. Layout resolver function (highest)
+2. `DefaultLayout` config
+3. `"default"` (if exists)
 
-Empty string = no layout.
+Empty string = no layout. If a layout name is resolved but the template doesn't exist, Dave silently falls back to no layout.
 
 ---
 
@@ -522,7 +537,7 @@ func Func(name string, factory func(*Render) any) ConfFunc
 **Example:**
 
 ```go
-r.Use(
+router.Use(
     dave.Func("upper", func(render *dave.Render) any {
         return func(s string) string {
             return strings.ToUpper(s)
@@ -582,10 +597,9 @@ Explicit paths beat path variables:
 
 ## Headers
 
-| Header       | Purpose                                   |
-| ------------ | ----------------------------------------- |
-| `D-TEMPLATE` | Override template name (default: `index`) |
-| `D-LAYOUT`   | Override layout                           |
+| Header       | Purpose                                                               |
+| ------------ | --------------------------------------------------------------------- |
+| `D-TEMPLATE` | Override template name (default: `index`). Must be alphanumeric only. |
 
 ---
 
@@ -616,10 +630,12 @@ type Render struct {
 
 ### GetRender
 
-Get full render context in handlers:
+Get full render context in form handlers. Returns `nil` if called outside the request lifecycle.
+
+**Note:** Global functions and template functions already receive a `*Render` parameter directly—use `GetRender` only in form handlers where you need access to render context.
 
 ```go
-func GetRender(ctx context.Context) Render
+func GetRender(ctx context.Context) *Render
 ```
 
 **Example:**
@@ -627,6 +643,9 @@ func GetRender(ctx context.Context) Render
 ```go
 dave.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
     render := dave.GetRender(r.Context())
+    if render == nil {
+        return nil, fmt.Errorf("render context not available")
+    }
     template := render.Template()
     layout := render.Layout()
     allGlobals := render.Globals()
@@ -636,16 +655,16 @@ dave.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
 
 ### PathVariable
 
-Get a single path variable:
+Get a single path variable. Returns an empty string if called outside the request lifecycle.
 
 ```go
-func PathVariable(r *http.Request, name string) any
+func PathVariable(r *http.Request, name string) string
 ```
 
 **Example:**
 
 ```go
-id := dave.PathVariable(r, "id").(string)
+id := dave.PathVariable(r, "id")
 ```
 
 ---
@@ -660,3 +679,34 @@ id := dave.PathVariable(r, "id").(string)
 | `{{.form}}`                  | `*FormResponse` | Form state (if FormResponse returned) |
 | `{{.error}}`                 | `string`        | Error message (fallback templates)    |
 | `{{.content}}`               | `template.HTML` | Page content (layout templates)       |
+
+---
+
+## Security Considerations
+
+### DevMode in Production
+
+**Don't use `DevMode: true` in production.** DevMode:
+
+- Rescans templates on every request (slow)
+- Could load malicious templates if the filesystem is writable
+- Reveals detailed error messages including file paths
+
+### Path Variables
+
+Path variables are user-controlled input extracted from URLs. While Go's `html/template` auto-escapes HTML output, take care when:
+
+- Using path variables in JavaScript contexts (e.g., `<script>var id = "{{.path_variables.id}}";</script>`)
+- Passing them to `template.HTML()` or similar unsafe functions  
+- Using them in href/src attributes without proper URL encoding
+
+### Thread Safety
+
+Call `router.Use()` only during initialization before starting the server. Calling it after the server starts processing requests may cause race conditions.
+
+### Other Security Considerations
+
+- Add middleware to set headers like `X-Content-Type-Options`, `X-Frame-Options`, and `Content-Security-Policy`.
+- Implement CSRF tokens via middleware and expose the token to templates through a global.
+- Use middleware to implement rate limiting.
+

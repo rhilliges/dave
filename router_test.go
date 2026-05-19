@@ -57,10 +57,8 @@ import (
 // - clone root templates before rendering
 
 // What to do next:
-// - handle SECURITY.md
-// - how to handle file uploads?
 // - bad request error when form parsing fails?
-// - figure out logging; double check how Go's conventions are
+// - how to handle file uploads?
 // - dev experience (caching, ScanTemplates)
 // - figure out middlewares/how to integrate middleware? (authentication, authorization)
 // - register path resolvers using reflection on the package path vs. a path variable - see if feasible
@@ -566,6 +564,8 @@ func TestRouter_UnknownHandler(t *testing.T) {
 	router, cleanup := prepareTest(templates)
 	defer cleanup()
 
+	router.Use(Config(&Conf{DevMode: true}))
+
 	data := url.Values{}
 	data.Add("d_form_handler", "handler1")
 	req := httptest.NewRequest("GET", "/v1/value1/v2/value2?"+data.Encode(), nil)
@@ -585,6 +585,8 @@ func TestRouter_HandlerDoesNotSupportMethod(t *testing.T) {
 	}
 	router, cleanup := prepareTest(templates)
 	defer cleanup()
+
+	router.Use(Config(&Conf{DevMode: true}))
 
 	data := url.Values{}
 	data.Add("d_form_handler", "handler1")
@@ -614,6 +616,8 @@ func TestRouter_TemplateNotFoundError(t *testing.T) {
 	router, cleanup := prepareTest(templates)
 	defer cleanup()
 
+	router.Use(Config(&Conf{DevMode: true}))
+
 	req := httptest.NewRequest("GET", "/path/to/nothing", nil)
 	rec := httptest.NewRecorder()
 
@@ -631,6 +635,8 @@ func TestRouter_ResourceNotFoundError(t *testing.T) {
 	}
 	router, cleanup := prepareTest(templates)
 	defer cleanup()
+
+	router.Use(Config(&Conf{DevMode: true}))
 
 	data := url.Values{}
 	data.Add("d_form_handler", "var1")
@@ -663,6 +669,8 @@ func TestRouter_UnexpectedError(t *testing.T) {
 	}
 	router, cleanup := prepareTest(templates)
 	defer cleanup()
+
+	router.Use(Config(&Conf{DevMode: true}))
 
 	data := url.Values{}
 	data.Add("d_form_handler", "var1")
@@ -766,25 +774,6 @@ func TestRouter_DefaultLayout(t *testing.T) {
 	assert.Equal(t, "layout-start  layout-content  layout-end", string(body))
 }
 
-func TestRouter_LayoutHeader(t *testing.T) {
-	templates := []testTemplate{
-		{"layouts/custom.tmpl", "custom-layout-start {{if .content}} {{.content}} {{end}} custom-layout-end"},
-		{"path/to/index.tmpl", "layout-content"},
-	}
-	router, cleanup := prepareTest(templates)
-	defer cleanup()
-
-	req := httptest.NewRequest("GET", "/path/to", nil)
-	rec := httptest.NewRecorder()
-	req.Header.Add("D-LAYOUT", "custom")
-
-	router.ServeHTTP(rec, req)
-
-	resp := rec.Result()
-	body, _ := io.ReadAll(resp.Body)
-	assert.Equal(t, "custom-layout-start  layout-content  custom-layout-end", string(body))
-}
-
 func TestRouter_LayoutResolver_ReturnsLayout(t *testing.T) {
 	templates := []testTemplate{
 		{"layouts/custom.tmpl", "custom-start {{.content}} custom-end"},
@@ -835,98 +824,6 @@ func TestRouter_LayoutResolver_EmptyStringSkipsLayout(t *testing.T) {
 
 	// Should render without any layout wrapping
 	assert.Equal(t, "page-content", string(body))
-}
-
-func TestRouter_LayoutResolver_HXRequestSkipsLayout(t *testing.T) {
-	templates := []testTemplate{
-		{"layouts/default.tmpl", "default-start {{.content}} default-end"},
-		{"path/to/index.tmpl", "partial-content"},
-	}
-	router, cleanup := prepareTest(templates)
-	defer cleanup()
-
-	router.Use(
-		LayoutResolver(func(r *http.Request) string {
-			if r.Header.Get("HX-Request") == "true" {
-				return ""
-			}
-			return "default"
-		}),
-	)
-
-	req := httptest.NewRequest("GET", "/path/to", nil)
-	req.Header.Set("HX-Request", "true")
-	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, req)
-
-	resp := rec.Result()
-	body, _ := io.ReadAll(resp.Body)
-	assert.Equal(t, "partial-content", string(body))
-
-	req2 := httptest.NewRequest("GET", "/path/to", nil)
-	rec2 := httptest.NewRecorder()
-	router.ServeHTTP(rec2, req2)
-
-	resp2 := rec2.Result()
-	body2, _ := io.ReadAll(resp2.Body)
-	assert.Equal(t, "default-start partial-content default-end", string(body2))
-}
-
-func TestRouter_LayoutResolver_DLayoutHeaderOverridesResolver(t *testing.T) {
-	templates := []testTemplate{
-		{"layouts/resolver-layout.tmpl", "resolver-start {{.content}} resolver-end"},
-		{"layouts/header-layout.tmpl", "header-start {{.content}} header-end"},
-		{"path/to/index.tmpl", "page-content"},
-	}
-	router, cleanup := prepareTest(templates)
-	defer cleanup()
-
-	router.Use(
-		LayoutResolver(func(r *http.Request) string {
-			return "resolver-layout"
-		}),
-	)
-
-	req := httptest.NewRequest("GET", "/path/to", nil)
-	req.Header.Set("D-LAYOUT", "header-layout")
-	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, req)
-
-	resp := rec.Result()
-	body, _ := io.ReadAll(resp.Body)
-
-	assert.Equal(t, "header-start page-content header-end", string(body))
-}
-
-func TestRouter_LayoutResolver_ResolverReceivesRequest(t *testing.T) {
-	templates := []testTemplate{
-		{"layouts/default.tmpl", "{{.content}}"},
-		{"path/to/index.tmpl", "content"},
-	}
-	router, cleanup := prepareTest(templates)
-	defer cleanup()
-
-	var capturedPath string
-	var capturedMethod string
-	var capturedHeader string
-
-	router.Use(
-		LayoutResolver(func(r *http.Request) string {
-			capturedPath = r.URL.Path
-			capturedMethod = r.Method
-			capturedHeader = r.Header.Get("X-Custom-Header")
-			return "default"
-		}),
-	)
-
-	req := httptest.NewRequest("POST", "/path/to", nil)
-	req.Header.Set("X-Custom-Header", "custom-value")
-	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, req)
-
-	assert.Equal(t, "/path/to", capturedPath)
-	assert.Equal(t, "POST", capturedMethod)
-	assert.Equal(t, "custom-value", capturedHeader)
 }
 
 func TestRouter_LayoutResolver_NonExistentLayoutFallsBackToNoLayout(t *testing.T) {

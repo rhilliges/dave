@@ -9,7 +9,7 @@ Dave works great with HTMX.
 Use a layout resolver to skip layouts for partial requests:
 
 ```go
-r.Use(
+router.Use(
     dave.LayoutResolver(func(r *http.Request) string {
         // No layout for HTMX partial requests
         if r.Header.Get("HX-Request") == "true" {
@@ -48,36 +48,94 @@ Use `hx-vals` to pass the form handler name:
 For simple HTMX responses that don't need a template, enable `AllowHandlerWrites` to return HTML fragments directly:
 
 ```go
-r.Use(
+router.Use(
     dave.Config(&dave.Conf{
         AllowHandlerWrites: true,
     }),
+    dave.FormHandler("toggleLike",
+        dave.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
+            count := db.ToggleLike(r.FormValue("id"))
+            fmt.Fprintf(w, `<span class="likes">%d</span>`, count)
+            return nil, nil
+        }),
+    ),
+    dave.FormHandler("deleteItem",
+        dave.Delete(func(w http.ResponseWriter, r *http.Request) (any, error) {
+            db.DeleteItem(r.FormValue("id"))
+            w.Write([]byte("")) // Return empty to remove element with hx-swap="outerHTML"
+            return nil, nil
+        }),
+    ),
 )
 
-dave.FormHandler("toggleLike",
-    dave.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
-        count := db.ToggleLike(r.FormValue("id"))
-        fmt.Fprintf(w, `<span class="likes">%d</span>`, count)
-        return nil, nil
-    }),
-)
-
-dave.FormHandler("deleteItem",
-    dave.Delete(func(w http.ResponseWriter, r *http.Request) (any, error) {
-        db.DeleteItem(r.FormValue("id"))
-        w.Write([]byte("")) // Return empty to remove element with hx-swap="outerHTML"
-        return nil, nil
-    }),
-)
 ```
 
 ## Open Dialogs with D-TEMPLATE
 
-TBD
+Use the `D-TEMPLATE` header to render different templates for the same URL. This is useful for modals and dialogs:
 
-## Implement Fullscreen View with D-LAYOUT
+```html
+<!-- Button that opens a modal -->
+<button
+  hx-get="/users/123"
+  hx-headers='{"D-TEMPLATE": "edit-modal"}'
+  hx-target="#modal-container"
+>
+  Edit User
+</button>
+```
 
-TBD
+Create both templates:
+
+```
+templates/users/{id}/
+├── index.tmpl       → Default view
+└── edit-modal.tmpl  → Modal content
+```
+
+The `D-TEMPLATE` value must be alphanumeric (with hyphens and underscores allowed) for security.
+
+## Dynamic Layout Selection
+
+Use a `LayoutResolver` to dynamically select layouts based on request properties. This is useful for fullscreen views, print layouts, or client-controlled layout switching.
+
+### Layout Override via Header
+
+To allow clients to request a specific layout (similar to the removed `D-LAYOUT` header), implement a custom header check in your resolver:
+
+```go
+router.Use(
+    dave.LayoutResolver(func(r *http.Request) string {
+        // Allow client to request a specific layout
+        if layout := r.Header.Get("X-Layout"); layout != "" {
+            // Validate against allowed layouts for security
+            switch layout {
+            case "fullscreen", "print", "minimal":
+                return layout
+            }
+        }
+        // Default layout logic
+        if r.Header.Get("HX-Request") == "true" {
+            return "" // No layout for HTMX partials
+        }
+        return "default"
+    }),
+)
+```
+
+Use with HTMX:
+
+```html
+<!-- Fullscreen view button -->
+<button
+  hx-get="/dashboard"
+  hx-headers='{"X-Layout": "fullscreen"}'
+  hx-target="body"
+  hx-push-url="true"
+>
+  Fullscreen Mode
+</button>
+```
 
 ## Embedding Templates
 
@@ -98,8 +156,8 @@ var templates embed.FS
 
 func main() {
     templateFS, _ := fs.Sub(templates, "templates")
-    r := dave.NewRouter(templateFS)
-    http.ListenAndServe(":8080", r)
+    router := dave.NewRouter(templateFS)
+    http.ListenAndServe(":8080", router)
 }
 ```
 
@@ -111,9 +169,7 @@ Add your own logging middleware to match your application's needs:
 package main
 
 import (
-    "log/slog"
-    "net/http"
-    "time"
+    ...
 
     "github.com/google/uuid"
     "github.com/rhilliges/dave"
@@ -137,8 +193,8 @@ func Logger(next http.Handler) http.Handler {
 }
 
 func main() {
-    r := dave.NewRouter(os.DirFS("templates"))
-    http.ListenAndServe(":8080", Logger(r))
+    router := dave.NewRouter(os.DirFS("templates"))
+    http.ListenAndServe(":8080", Logger(router))
 }
 ```
 
@@ -207,6 +263,7 @@ Add translation loading to `main.go`:
 ```go
 import (
     "encoding/json"
+    "log"
     "os"
     "path/filepath"
     "strings"
@@ -218,15 +275,26 @@ type Translations map[string]map[string]string
 
 func loadTranslations(dir string) Translations {
     translations := make(Translations)
-    files, _ := os.ReadDir(dir)
+    files, err := os.ReadDir(dir)
+    if err != nil {
+        log.Printf("warning: could not read translations directory: %v", err)
+        return translations
+    }
     for _, file := range files {
         if !strings.HasSuffix(file.Name(), ".json") {
             continue
         }
         lang := strings.TrimSuffix(file.Name(), ".json")
-        data, _ := os.ReadFile(filepath.Join(dir, file.Name()))
+        data, err := os.ReadFile(filepath.Join(dir, file.Name()))
+        if err != nil {
+            log.Printf("warning: could not read %s: %v", file.Name(), err)
+            continue
+        }
         var t map[string]string
-        json.Unmarshal(data, &t)
+        if err := json.Unmarshal(data, &t); err != nil {
+            log.Printf("warning: could not parse %s: %v", file.Name(), err)
+            continue
+        }
         translations[lang] = t
     }
     return translations
@@ -240,7 +308,7 @@ In `main()`, load translations and register the globals/functions:
 ```go
 translations := loadTranslations("translations")
 
-r.Use(
+router.Use(
     // Detect language from Accept-Language header
     dave.Global("lang", func(render *dave.Render) any {
         acceptLang := render.Request().Header.Get("Accept-Language")
@@ -291,7 +359,7 @@ The page now displays in German. This pattern demonstrates how globals (for requ
 If you prefer accessing data via template functions instead of dot-notation, you can implement your own accessor functions. This can be helpful when debugging.
 
 ```go
-r.Use(
+router.Use(
     dave.Func("var", func(render *dave.Render) any {
         return func(name string) string {
             val := render.PathVariables()[name]
@@ -353,3 +421,4 @@ Then use in templates:
 <!-- Instead of {{.form.Errors "email"}} -->
 {{form | error "email"}}
 ```
+
