@@ -38,7 +38,6 @@ type errorTypeMapping struct {
 type Router struct {
 	fs             fs.FS
 	formHandlers   map[string]map[string]FormHandlerFunc
-	globals        map[string]func(render *Render) any
 	templateFuncs  map[string]func(*http.Request) any
 	templates      *template.Template
 	config         *Conf
@@ -51,7 +50,6 @@ type Render struct {
 	request       *http.Request
 	template      string
 	pathVariables map[string]string
-	globals       map[string]any
 	ctx           map[string]any
 	handlerResult any
 	layout        string
@@ -71,10 +69,6 @@ func (r *Render) PathVariables() map[string]string {
 
 func (r *Render) Layout() string {
 	return r.layout
-}
-
-func (r *Render) Globals() map[string]any {
-	return r.globals
 }
 
 func (r *Render) Ctx() map[string]any {
@@ -172,12 +166,6 @@ func Func(name string, factory func(*http.Request) any) ConfFunc {
 	}
 }
 
-func Global(name string, globalFunc func(render *Render) any) ConfFunc {
-	return func(router *Router) {
-		router.globals[name] = globalFunc
-	}
-}
-
 func LayoutResolver(resolver LayoutResolverFunc) ConfFunc {
 	return func(router *Router) {
 		router.layoutResolver = resolver
@@ -244,7 +232,6 @@ func NewRouter(fs fs.FS) *Router {
 	return &Router{
 		fs:            fs,
 		formHandlers:  make(map[string]map[string]FormHandlerFunc),
-		globals:       make(map[string]func(render *Render) any),
 		templateFuncs: make(map[string]func(*http.Request) any),
 		config:        &Conf{},
 	}
@@ -277,15 +264,10 @@ func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		render := &Render{
 			request:       r,
 			pathVariables: pathVariables,
-			globals:       make(map[string]any),
 			handlerResult: &FormResponse{},
 			ctx:           getCtxValues(r),
 			template:      templateName,
 			layout:        router.getLayout(r),
-		}
-
-		for name, global := range router.globals {
-			render.globals[name] = global(render)
 		}
 
 		r = r.WithContext(context.WithValue(r.Context(), renderContextKey{}, render))
@@ -330,7 +312,6 @@ func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		layoutData := map[string]any{
 			"content": template.HTML(content),
-			"globals": render.globals,
 			"ctx":     render.ctx,
 		}
 		pageWriter := &strings.Builder{}
@@ -494,7 +475,6 @@ func (router *Router) RenderTemplate(r *http.Request, templateName string) ([]by
 		"ctx": getCtxValues(r),
 	}
 	if render != nil {
-		data["globals"] = render.globals
 		data["path_variables"] = render.pathVariables
 		if formResponse, ok := render.handlerResult.(*FormResponse); ok {
 			data["form"] = formResponse
@@ -610,14 +590,6 @@ func Layout(r *http.Request) string {
 		return ""
 	}
 	return render.layout
-}
-
-func GlobalValue(r *http.Request, name string) any {
-	render, ok := r.Context().Value(requestContextKey{}).(Render)
-	if !ok {
-		return nil
-	}
-	return render.globals[name]
 }
 
 type daveError struct {
