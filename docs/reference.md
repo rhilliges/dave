@@ -2,15 +2,6 @@
 
 Reference documentation for Dave, a file-based router for Go.
 
-## Naming Conventions
-
-Dave uses the `d_` and `D-` prefixes for its reserved names:
-
-- **`d_form_handler`** - Form field name that specifies which handler to invoke
-- **`D-TEMPLATE`** - HTTP header to override which template to render (must be alphanumeric, hyphens, or underscores only)
-
-The `d` stands for "Dave". These prefixes help avoid conflicts with your application's own field names and headers.
-
 ## Table of Contents
 
 - [Router](#router)
@@ -45,8 +36,6 @@ func NewRouter(fs fs.FS) *Router
 ```go
 router := dave.NewRouter(os.DirFS("templates"))
 ```
-
-### Use
 
 ### Use
 
@@ -699,7 +688,7 @@ id := dave.PathVariable(r, "id")
 
 ### Path Variables
 
-Path variables are user-controlled input extracted from URLs. While Go's `html/template` auto-escapes HTML output, take care when:
+Path variables are user-controlled input extracted from URLs. Take care when:
 
 - Using path variables in JavaScript contexts (e.g., `<script>var id = "{{.path_variables.id}}";</script>`)
 - Passing them to `template.HTML()` or similar unsafe functions  

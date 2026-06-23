@@ -18,6 +18,7 @@ type (
 	FormHandlerFunc     func(w http.ResponseWriter, r *http.Request) (any, error)
 	LayoutResolverFunc  func(r *http.Request) string
 	ConfFunc            func(router *Router)
+	MiddlewareFunc      func(next http.Handler) http.Handler
 )
 
 func (handlerFunc FormHandlerFunc) call(w http.ResponseWriter, r *http.Request, render *Render, allowWrites bool) (any, bool, error) {
@@ -43,6 +44,7 @@ type Router struct {
 	config         *Conf
 	layoutResolver LayoutResolverFunc
 	errorTypes     []errorTypeMapping
+	middlewares    []MiddlewareFunc
 }
 
 type Render struct {
@@ -50,6 +52,7 @@ type Render struct {
 	template      string
 	pathVariables map[string]string
 	globals       map[string]any
+	ctx           map[string]any
 	handlerResult any
 	layout        string
 }
@@ -74,6 +77,10 @@ func (r *Render) Globals() map[string]any {
 	return r.globals
 }
 
+func (r *Render) Ctx() map[string]any {
+	return r.ctx
+}
+
 func (r *Render) HandlerResult() any {
 	return r.handlerResult
 }
@@ -86,6 +93,37 @@ func (r *Render) FormResponse() *FormResponse {
 }
 
 type requestContextKey struct{}
+
+type ctxValuesKey struct{}
+
+type renderContextKey struct{}
+
+type pathVariablesKey struct{}
+
+func SetValue(r *http.Request, key string, value any) *http.Request {
+	values, _ := r.Context().Value(ctxValuesKey{}).(map[string]any)
+	if values == nil {
+		values = make(map[string]any)
+	}
+	values[key] = value
+	return r.WithContext(context.WithValue(r.Context(), ctxValuesKey{}, values))
+}
+
+func GetValue(r *http.Request, key string) any {
+	values, _ := r.Context().Value(ctxValuesKey{}).(map[string]any)
+	if values == nil {
+		return nil
+	}
+	return values[key]
+}
+
+func getCtxValues(r *http.Request) map[string]any {
+	values, _ := r.Context().Value(ctxValuesKey{}).(map[string]any)
+	if values == nil {
+		return make(map[string]any)
+	}
+	return values
+}
 
 func (router *Router) Use(configFunc ...ConfFunc) {
 	for _, f := range configFunc {
@@ -156,6 +194,12 @@ func ErrorType(target error, status int, fallbackName string) ConfFunc {
 	}
 }
 
+func Middleware(mw MiddlewareFunc) ConfFunc {
+	return func(router *Router) {
+		router.middlewares = append(router.middlewares, mw)
+	}
+}
+
 func FormHandler(s string, handlerFunc ...FormHandlerConfFunc) ConfFunc {
 	return func(router *Router) {
 		for _, f := range handlerFunc {
@@ -219,85 +263,89 @@ func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	render := &Render{
-		request:       r,
-		pathVariables: make(map[string]string),
-		globals:       make(map[string]any),
-		handlerResult: &FormResponse{},
-	}
-	rootTemplate, _ := router.templates.Clone()
-	renderFuncs := make(template.FuncMap)
-	for name, factory := range router.templateFuncs {
-		renderFuncs[name] = factory(render)
-	}
-	rootTemplate.Funcs(renderFuncs)
 
-	render.layout = router.getLayout(r)
 	templateName, pathVariables, daveErr := router.parseRequestPath(r)
 	if daveErr != nil {
-		router.renderError(w, rootTemplate, daveErr)
-		return
-	}
-	render.template = templateName
-	render.pathVariables = pathVariables
-
-	for name, global := range router.globals {
-		render.globals[name] = global(render)
-	}
-
-	handler, daveErr := router.getFormHandler(r)
-	if daveErr != nil {
+		rootTemplate, _ := router.templates.Clone()
 		router.renderError(w, rootTemplate, daveErr)
 		return
 	}
 
-	if handler != nil {
-		handlerResult, handlerWrote, err := handler.call(w, r, render, router.config.AllowHandlerWrites)
+	r = r.WithContext(context.WithValue(r.Context(), pathVariablesKey{}, pathVariables))
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		render := &Render{
+			request:       r,
+			pathVariables: pathVariables,
+			globals:       make(map[string]any),
+			handlerResult: &FormResponse{},
+			ctx:           getCtxValues(r),
+			template:      templateName,
+			layout:        router.getLayout(r),
+		}
+
+		for name, global := range router.globals {
+			render.globals[name] = global(render)
+		}
+
+		r = r.WithContext(context.WithValue(r.Context(), renderContextKey{}, render))
+
+		rootTemplate, _ := router.templates.Clone()
+
+		formHandler, daveErr := router.getFormHandler(r)
+		if daveErr != nil {
+			router.renderError(w, rootTemplate, daveErr)
+			return
+		}
+
+		if formHandler != nil {
+			handlerResult, handlerWrote, err := formHandler.call(w, r, render, router.config.AllowHandlerWrites)
+			if err != nil {
+				router.renderError(w, rootTemplate, err)
+				return
+			}
+			if handlerWrote {
+				return
+			}
+			render.handlerResult = handlerResult
+		}
+
+		content, err := router.RenderTemplate(r, render.template)
 		if err != nil {
 			router.renderError(w, rootTemplate, err)
 			return
 		}
-		if handlerWrote {
+
+		if render.layout == "" {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Write(content)
 			return
 		}
-		render.handlerResult = handlerResult
-	}
 
-	data := make(map[string]any)
-	if formResponse, ok := render.handlerResult.(*FormResponse); ok {
-		data["form"] = formResponse
-		data["result"] = formResponse.Result
-	} else {
-		data["result"] = render.handlerResult
-	}
-	data["globals"] = render.globals
-	data["path_variables"] = render.pathVariables
+		renderFuncs := make(template.FuncMap)
+		for name, factory := range router.templateFuncs {
+			renderFuncs[name] = factory(render)
+		}
+		rootTemplate.Funcs(renderFuncs)
 
-	contentWriter := &strings.Builder{}
-	err := rootTemplate.ExecuteTemplate(contentWriter, render.template, data)
-	if err != nil {
-		router.renderError(w, rootTemplate, err)
-		return
-	}
-
-	if render.layout == "" {
+		layoutData := map[string]any{
+			"content": template.HTML(content),
+			"globals": render.globals,
+			"ctx":     render.ctx,
+		}
+		pageWriter := &strings.Builder{}
+		err = rootTemplate.ExecuteTemplate(pageWriter, render.layout, layoutData)
+		if err != nil {
+			router.renderError(w, rootTemplate, err)
+			return
+		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write([]byte(contentWriter.String()))
-		return
+		w.Write([]byte(pageWriter.String()))
+	}))
+	for i := len(router.middlewares) - 1; i >= 0; i-- {
+		handler = router.middlewares[i](handler)
 	}
-
-	layoutData := map[string]any{
-		"content": template.HTML(contentWriter.String()),
-		"globals": render.globals,
-	}
-	pageWriter := &strings.Builder{}
-	err = rootTemplate.ExecuteTemplate(pageWriter, render.layout, layoutData)
-	if err != nil {
-		router.renderError(w, rootTemplate, err)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write([]byte(pageWriter.String()))
+	handler.ServeHTTP(w, r)
 }
 
 func (router *Router) getLayout(r *http.Request) string {
@@ -427,6 +475,42 @@ func (router *Router) ScanTemplates() error {
 	return nil
 }
 
+func (router *Router) RenderTemplate(r *http.Request, templateName string) ([]byte, error) {
+	render, _ := r.Context().Value(renderContextKey{}).(*Render)
+
+	rootTemplate, _ := router.templates.Clone()
+	renderFuncs := make(template.FuncMap)
+	for name, factory := range router.templateFuncs {
+		renderFuncs[name] = factory(render)
+	}
+	rootTemplate.Funcs(renderFuncs)
+
+	t := rootTemplate.Lookup(templateName)
+	if t == nil {
+		return nil, fmt.Errorf("template not found: %s", templateName)
+	}
+
+	data := map[string]any{
+		"ctx": getCtxValues(r),
+	}
+	if render != nil {
+		data["globals"] = render.globals
+		data["path_variables"] = render.pathVariables
+		if formResponse, ok := render.handlerResult.(*FormResponse); ok {
+			data["form"] = formResponse
+			data["result"] = formResponse.Result
+		} else {
+			data["result"] = render.handlerResult
+		}
+	}
+
+	var buf strings.Builder
+	if err := t.Execute(&buf, data); err != nil {
+		return nil, err
+	}
+	return []byte(buf.String()), nil
+}
+
 func (router *Router) parseRequestPath(r *http.Request) (string, map[string]string, *daveError) {
 	path := r.Header.Get("D-TEMPLATE")
 	if path == "" {
@@ -499,11 +583,17 @@ func GetRender(context context.Context) *Render {
 }
 
 func PathVariable(r *http.Request, varName string) string {
-	render, ok := r.Context().Value(requestContextKey{}).(Render)
-	if !ok {
-		return ""
+	if pv, ok := r.Context().Value(pathVariablesKey{}).(map[string]string); ok {
+		return pv[varName]
 	}
-	return render.pathVariables[varName]
+	return ""
+}
+
+func PathVariables(r *http.Request) map[string]string {
+	if pv, ok := r.Context().Value(pathVariablesKey{}).(map[string]string); ok {
+		return pv
+	}
+	return nil
 }
 
 func GlobalValue(r *http.Request, name string) any {

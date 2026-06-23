@@ -55,9 +55,10 @@ import (
 // - document accessing data through template func
 // - custom fallback templates for e.g. auth errors
 // - clone root templates before rendering
+// - bad request error when form parsing fails
 
 // What to do next:
-// - bad request error when form parsing fails?
+// - guide for mise and air
 // - how to handle file uploads?
 // - dev experience (caching, ScanTemplates)
 // - figure out middlewares/how to integrate middleware? (authentication, authorization)
@@ -184,9 +185,9 @@ func TestRouter_TemplateHeader(t *testing.T) {
 	assert.Equal(t, "create", string(body))
 }
 
-func TestRouter_UseGlobals(t *testing.T) {
+func TestRouter_UseMiddleware(t *testing.T) {
 	templates := []testTemplate{
-		{"v1/index.tmpl", "{{.globals.global1}},{{.globals.global2}}"},
+		{"v1/index.tmpl", "{{.ctx.value1}},{{.ctx.value2}}"},
 	}
 	router, cleanup := prepareTest(templates)
 	defer cleanup()
@@ -195,11 +196,12 @@ func TestRouter_UseGlobals(t *testing.T) {
 	rec := httptest.NewRecorder()
 
 	router.Use(
-		Global("global1", func(render *Render) any {
-			return "value1"
-		}),
-		Global("global2", func(render *Render) any {
-			return "value2"
+		Middleware(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				r = SetValue(r, "value1", "value1")
+				r = SetValue(r, "value2", "value2")
+				next.ServeHTTP(w, r)
+			})
 		}),
 	)
 
@@ -210,24 +212,27 @@ func TestRouter_UseGlobals(t *testing.T) {
 	assert.Equal(t, "value1,value2", string(body))
 }
 
-func TestRouter_GlobalsCanAccessRequest(t *testing.T) {
+func TestRouter_MiddlewareCanAccessRequest(t *testing.T) {
 	templates := []testTemplate{
-		{"v1/index.tmpl", "{{.globals.lang}}"},
+		{"v1/index.tmpl", "{{.ctx.lang}}"},
 	}
 	router, cleanup := prepareTest(templates)
 	defer cleanup()
 
 	router.Use(
-		Global("lang", func(render *Render) any {
-			acceptLang := render.Request().Header.Get("Accept-Language")
-			if strings.HasPrefix(acceptLang, "de") {
-				return "de"
-			}
-			return "en"
+		Middleware(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				acceptLang := r.Header.Get("Accept-Language")
+				lang := "en"
+				if strings.HasPrefix(acceptLang, "de") {
+					lang = "de"
+				}
+				r = SetValue(r, "lang", lang)
+				next.ServeHTTP(w, r)
+			})
 		}),
 	)
 
-	// Test with German language
 	req := httptest.NewRequest("GET", "/v1", nil)
 	req.Header.Set("Accept-Language", "de-DE,de;q=0.9")
 	rec := httptest.NewRecorder()
@@ -236,7 +241,6 @@ func TestRouter_GlobalsCanAccessRequest(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	assert.Equal(t, "de", string(body))
 
-	// Test with English language
 	req2 := httptest.NewRequest("GET", "/v1", nil)
 	req2.Header.Set("Accept-Language", "en-US,en;q=0.9")
 	rec2 := httptest.NewRecorder()
@@ -246,17 +250,20 @@ func TestRouter_GlobalsCanAccessRequest(t *testing.T) {
 	assert.Equal(t, "en", string(body2))
 }
 
-func TestRouter_GlobalsCanAccessPathVariables(t *testing.T) {
+func TestRouter_MiddlewareCanAccessPathVariables(t *testing.T) {
 	templates := []testTemplate{
-		{"users/{id}/index.tmpl", "{{.globals.userGreeting}}"},
+		{"users/{id}/index.tmpl", "{{.ctx.userGreeting}}"},
 	}
 	router, cleanup := prepareTest(templates)
 	defer cleanup()
 
 	router.Use(
-		Global("userGreeting", func(render *Render) any {
-			id := render.PathVariables()["id"]
-			return fmt.Sprintf("Hello user %s", id)
+		Middleware(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				id := PathVariable(r, "id")
+				r = SetValue(r, "userGreeting", fmt.Sprintf("Hello user %s", id))
+				next.ServeHTTP(w, r)
+			})
 		}),
 	)
 
@@ -268,17 +275,20 @@ func TestRouter_GlobalsCanAccessPathVariables(t *testing.T) {
 	assert.Equal(t, "Hello user 42", string(body))
 }
 
-func TestRouter_GlobalsAccessibleInLayouts(t *testing.T) {
+func TestRouter_CtxAccessibleInLayouts(t *testing.T) {
 	templates := []testTemplate{
-		{"layouts/default.tmpl", "layout-user:{{.globals.currentUser}} content:{{.content}}"},
-		{"path/to/index.tmpl", "page-user:{{.globals.currentUser}}"},
+		{"layouts/default.tmpl", "layout-user:{{.ctx.currentUser}} content:{{.content}}"},
+		{"path/to/index.tmpl", "page-user:{{.ctx.currentUser}}"},
 	}
 	router, cleanup := prepareTest(templates)
 	defer cleanup()
 
 	router.Use(
-		Global("currentUser", func(render *Render) any {
-			return "john"
+		Middleware(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				r = SetValue(r, "currentUser", "john")
+				next.ServeHTTP(w, r)
+			})
 		}),
 	)
 
@@ -318,7 +328,7 @@ func TestRouter_UseTemplateFunctions(t *testing.T) {
 	assert.Equal(t, "VAL", string(body))
 }
 
-func TestRouter_RenderFuncCanAccessRender(t *testing.T) {
+func TestRouter_RenderFuncCanAccessCtx(t *testing.T) {
 	templates := []testTemplate{
 		{"v1/index.tmpl", "{{i18n \"hello\"}}"},
 	}
@@ -331,16 +341,20 @@ func TestRouter_RenderFuncCanAccessRender(t *testing.T) {
 	}
 
 	router.Use(
-		Global("lang", func(render *Render) any {
-			acceptLang := render.Request().Header.Get("Accept-Language")
-			if strings.HasPrefix(acceptLang, "de") {
-				return "de"
-			}
-			return "en"
+		Middleware(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				acceptLang := r.Header.Get("Accept-Language")
+				lang := "en"
+				if strings.HasPrefix(acceptLang, "de") {
+					lang = "de"
+				}
+				r = SetValue(r, "lang", lang)
+				next.ServeHTTP(w, r)
+			})
 		}),
 		Func("i18n", func(render *Render) any {
 			return func(key string) string {
-				lang := render.Globals()["lang"].(string)
+				lang := render.Ctx()["lang"].(string)
 				if t, ok := translations[lang]; ok {
 					if val, ok := t[key]; ok {
 						return val
@@ -1442,9 +1456,9 @@ func TestRouter_CustomErrorType_FallsBackToUnexpected(t *testing.T) {
 	assert.Equal(t, "500: some unknown error", string(body))
 }
 
-func TestRouter_GlobalMethodReturnsError_MapsToErrorType(t *testing.T) {
+func TestRouter_CtxMethodReturnsError_MapsToErrorType(t *testing.T) {
 	templates := []testTemplate{
-		{"index.tmpl", "{{.globals.auth.CurrentUser}}"},
+		{"index.tmpl", "{{.ctx.auth.CurrentUser}}"},
 		{"fallback/unauthorized.tmpl", "401: {{.error}}"},
 	}
 	router, cleanup := prepareTest(templates)
@@ -1455,8 +1469,11 @@ func TestRouter_GlobalMethodReturnsError_MapsToErrorType(t *testing.T) {
 
 	router.Use(
 		ErrorType(ErrUnauthorized, http.StatusUnauthorized, "unauthorized"),
-		Global("auth", func(render *Render) any {
-			return &AuthService{}
+		Middleware(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				r = SetValue(r, "auth", &AuthService{})
+				next.ServeHTTP(w, r)
+			})
 		}),
 	)
 
