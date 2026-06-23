@@ -39,7 +39,7 @@ type Router struct {
 	fs             fs.FS
 	formHandlers   map[string]map[string]FormHandlerFunc
 	globals        map[string]func(render *Render) any
-	templateFuncs  map[string]func(*Render) any
+	templateFuncs  map[string]func(*http.Request) any
 	templates      *template.Template
 	config         *Conf
 	layoutResolver LayoutResolverFunc
@@ -166,7 +166,7 @@ func (c *Conf) getMaxFormSize() int64 {
 	return c.MaxFormSize
 }
 
-func Func(name string, factory func(*Render) any) ConfFunc {
+func Func(name string, factory func(*http.Request) any) ConfFunc {
 	return func(router *Router) {
 		router.templateFuncs[name] = factory
 	}
@@ -245,7 +245,7 @@ func NewRouter(fs fs.FS) *Router {
 		fs:            fs,
 		formHandlers:  make(map[string]map[string]FormHandlerFunc),
 		globals:       make(map[string]func(render *Render) any),
-		templateFuncs: make(map[string]func(*Render) any),
+		templateFuncs: make(map[string]func(*http.Request) any),
 		config:        &Conf{},
 	}
 }
@@ -324,7 +324,7 @@ func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		renderFuncs := make(template.FuncMap)
 		for name, factory := range router.templateFuncs {
-			renderFuncs[name] = factory(render)
+			renderFuncs[name] = factory(r)
 		}
 		rootTemplate.Funcs(renderFuncs)
 
@@ -481,7 +481,7 @@ func (router *Router) RenderTemplate(r *http.Request, templateName string) ([]by
 	rootTemplate, _ := router.templates.Clone()
 	renderFuncs := make(template.FuncMap)
 	for name, factory := range router.templateFuncs {
-		renderFuncs[name] = factory(render)
+		renderFuncs[name] = factory(r)
 	}
 	rootTemplate.Funcs(renderFuncs)
 
@@ -594,6 +594,22 @@ func PathVariables(r *http.Request) map[string]string {
 		return pv
 	}
 	return nil
+}
+
+func Template(r *http.Request) string {
+	render, ok := r.Context().Value(renderContextKey{}).(*Render)
+	if !ok || render == nil {
+		return ""
+	}
+	return render.template
+}
+
+func Layout(r *http.Request) string {
+	render, ok := r.Context().Value(renderContextKey{}).(*Render)
+	if !ok || render == nil {
+		return ""
+	}
+	return render.layout
 }
 
 func GlobalValue(r *http.Request, name string) any {

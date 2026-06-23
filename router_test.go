@@ -311,7 +311,7 @@ func TestRouter_UseTemplateFunctions(t *testing.T) {
 	defer cleanup()
 
 	router.Use(
-		Func("to_upper", func(render *Render) any {
+		Func("to_upper", func(r *http.Request) any {
 			return func(value string) string {
 				return strings.ToUpper(value)
 			}
@@ -352,9 +352,9 @@ func TestRouter_RenderFuncCanAccessCtx(t *testing.T) {
 				next.ServeHTTP(w, r)
 			})
 		}),
-		Func("i18n", func(render *Render) any {
+		Func("i18n", func(r *http.Request) any {
 			return func(key string) string {
-				lang := render.Ctx()["lang"].(string)
+				lang := GetValue(r, "lang").(string)
 				if t, ok := translations[lang]; ok {
 					if val, ok := t[key]; ok {
 						return val
