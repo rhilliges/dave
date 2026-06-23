@@ -21,11 +21,9 @@ type (
 	MiddlewareFunc      func(next http.Handler) http.Handler
 )
 
-func (handlerFunc FormHandlerFunc) call(w http.ResponseWriter, r *http.Request, render *Render, allowWrites bool) (any, bool, error) {
-	resolverCtx := context.WithValue(r.Context(), requestContextKey{}, *render)
-	resolverReq := r.WithContext(resolverCtx)
+func (handlerFunc FormHandlerFunc) call(w http.ResponseWriter, r *http.Request, rend *render, allowWrites bool) (any, bool, error) {
 	guardedWriter := &guardedResponseWriter{ResponseWriter: w, allowWrites: allowWrites}
-	result, err := handlerFunc(guardedWriter, resolverReq)
+	result, err := handlerFunc(guardedWriter, r)
 	return result, guardedWriter.written, err
 }
 
@@ -46,7 +44,7 @@ type Router struct {
 	middlewares    []MiddlewareFunc
 }
 
-type Render struct {
+type render struct {
 	request       *http.Request
 	template      string
 	pathVariables map[string]string
@@ -55,38 +53,12 @@ type Render struct {
 	layout        string
 }
 
-func (r *Render) Request() *http.Request {
-	return r.request
-}
-
-func (r *Render) Template() string {
-	return r.template
-}
-
-func (r *Render) PathVariables() map[string]string {
-	return r.pathVariables
-}
-
-func (r *Render) Layout() string {
-	return r.layout
-}
-
-func (r *Render) Ctx() map[string]any {
-	return r.ctx
-}
-
-func (r *Render) HandlerResult() any {
-	return r.handlerResult
-}
-
-func (r *Render) FormResponse() *FormResponse {
+func (r *render) formResponse() *FormResponse {
 	if formResponse, ok := r.handlerResult.(*FormResponse); ok {
 		return formResponse
 	}
 	return nil
 }
-
-type requestContextKey struct{}
 
 type ctxValuesKey struct{}
 
@@ -261,7 +233,7 @@ func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	r = r.WithContext(context.WithValue(r.Context(), pathVariablesKey{}, pathVariables))
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		render := &Render{
+		rend := &render{
 			request:       r,
 			pathVariables: pathVariables,
 			handlerResult: &FormResponse{},
@@ -270,7 +242,7 @@ func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			layout:        router.getLayout(r),
 		}
 
-		r = r.WithContext(context.WithValue(r.Context(), renderContextKey{}, render))
+		r = r.WithContext(context.WithValue(r.Context(), renderContextKey{}, rend))
 
 		rootTemplate, _ := router.templates.Clone()
 
@@ -281,7 +253,7 @@ func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if formHandler != nil {
-			handlerResult, handlerWrote, err := formHandler.call(w, r, render, router.config.AllowHandlerWrites)
+			handlerResult, handlerWrote, err := formHandler.call(w, r, rend, router.config.AllowHandlerWrites)
 			if err != nil {
 				router.renderError(w, rootTemplate, err)
 				return
@@ -289,16 +261,16 @@ func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if handlerWrote {
 				return
 			}
-			render.handlerResult = handlerResult
+			rend.handlerResult = handlerResult
 		}
 
-		content, err := router.RenderTemplate(r, render.template)
+		content, err := router.RenderTemplate(r, rend.template)
 		if err != nil {
 			router.renderError(w, rootTemplate, err)
 			return
 		}
 
-		if render.layout == "" {
+		if rend.layout == "" {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.Write(content)
 			return
@@ -312,10 +284,10 @@ func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		layoutData := map[string]any{
 			"content": template.HTML(content),
-			"ctx":     render.ctx,
+			"ctx":     rend.ctx,
 		}
 		pageWriter := &strings.Builder{}
-		err = rootTemplate.ExecuteTemplate(pageWriter, render.layout, layoutData)
+		err = rootTemplate.ExecuteTemplate(pageWriter, rend.layout, layoutData)
 		if err != nil {
 			router.renderError(w, rootTemplate, err)
 			return
@@ -457,7 +429,7 @@ func (router *Router) ScanTemplates() error {
 }
 
 func (router *Router) RenderTemplate(r *http.Request, templateName string) ([]byte, error) {
-	render, _ := r.Context().Value(renderContextKey{}).(*Render)
+	rend, _ := r.Context().Value(renderContextKey{}).(*render)
 
 	rootTemplate, _ := router.templates.Clone()
 	renderFuncs := make(template.FuncMap)
@@ -474,13 +446,13 @@ func (router *Router) RenderTemplate(r *http.Request, templateName string) ([]by
 	data := map[string]any{
 		"ctx": getCtxValues(r),
 	}
-	if render != nil {
-		data["path_variables"] = render.pathVariables
-		if formResponse, ok := render.handlerResult.(*FormResponse); ok {
+	if rend != nil {
+		data["path_variables"] = rend.pathVariables
+		if formResponse, ok := rend.handlerResult.(*FormResponse); ok {
 			data["form"] = formResponse
 			data["result"] = formResponse.Result
 		} else {
-			data["result"] = render.handlerResult
+			data["result"] = rend.handlerResult
 		}
 	}
 
@@ -554,14 +526,6 @@ func isValidTemplateName(name string) bool {
 	return validTemplateNamePattern.MatchString(name)
 }
 
-func GetRender(context context.Context) *Render {
-	render, ok := context.Value(requestContextKey{}).(Render)
-	if !ok {
-		return nil
-	}
-	return &render
-}
-
 func PathVariable(r *http.Request, varName string) string {
 	if pv, ok := r.Context().Value(pathVariablesKey{}).(map[string]string); ok {
 		return pv[varName]
@@ -577,19 +541,19 @@ func PathVariables(r *http.Request) map[string]string {
 }
 
 func Template(r *http.Request) string {
-	render, ok := r.Context().Value(renderContextKey{}).(*Render)
-	if !ok || render == nil {
+	rend, ok := r.Context().Value(renderContextKey{}).(*render)
+	if !ok || rend == nil {
 		return ""
 	}
-	return render.template
+	return rend.template
 }
 
 func Layout(r *http.Request) string {
-	render, ok := r.Context().Value(renderContextKey{}).(*Render)
-	if !ok || render == nil {
+	rend, ok := r.Context().Value(renderContextKey{}).(*render)
+	if !ok || rend == nil {
 		return ""
 	}
-	return render.layout
+	return rend.layout
 }
 
 type daveError struct {
