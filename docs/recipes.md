@@ -45,31 +45,6 @@ Use `hx-vals` to pass the form handler name:
 </form>
 ```
 
-For simple HTMX responses that don't need a template, enable `AllowHandlerWrites` to return HTML fragments directly:
-
-```go
-router.Use(
-    dave.Config(&dave.Conf{
-        AllowHandlerWrites: true,
-    }),
-    dave.FormHandler("toggleLike",
-        dave.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
-            count := db.ToggleLike(r.FormValue("id"))
-            fmt.Fprintf(w, `<span class="likes">%d</span>`, count)
-            return nil, nil
-        }),
-    ),
-    dave.FormHandler("deleteItem",
-        dave.Delete(func(w http.ResponseWriter, r *http.Request) (any, error) {
-            db.DeleteItem(r.FormValue("id"))
-            w.Write([]byte("")) // Return empty to remove element with hx-swap="outerHTML"
-            return nil, nil
-        }),
-    ),
-)
-
-```
-
 ## Open Dialogs with D-TEMPLATE
 
 Use the `D-TEMPLATE` header to render different templates for the same URL. This is useful for modals and dialogs:
@@ -230,7 +205,7 @@ func Logger(next http.Handler) http.Handler {
 
 ## Internationalization (i18n)
 
-Add multi-language support using globals and template functions together.
+Add multi-language support using middleware and template functions together.
 
 ### Translation Files
 
@@ -301,27 +276,31 @@ func loadTranslations(dir string) Translations {
 }
 ```
 
-### Registering Globals and Functions
+### Registering Middleware and Functions
 
-In `main()`, load translations and register the globals/functions:
+In `main()`, load translations and register the middleware/functions:
 
 ```go
 translations := loadTranslations("translations")
 
 router.Use(
-    // Detect language from Accept-Language header
-    dave.Global("lang", func(render *dave.Render) any {
-        acceptLang := render.Request().Header.Get("Accept-Language")
-        if strings.HasPrefix(acceptLang, "de") {
-            return "de"
-        }
-        return "en"
+    // Detect language from Accept-Language header and set it in context
+    dave.Middleware(func(next http.Handler) http.Handler {
+        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+            lang := "en"
+            acceptLang := r.Header.Get("Accept-Language")
+            if strings.HasPrefix(acceptLang, "de") {
+                lang = "de"
+            }
+            r = dave.SetValue(r, "lang", lang)
+            next.ServeHTTP(w, r)
+        })
     }),
 
     // i18n function looks up translations using the detected language
-    dave.Func("t", func(render *dave.Render) any {
+    dave.Func("t", func(r *http.Request) any {
         return func(key string) string {
-            lang := render.Globals()["lang"].(string)
+            lang := dave.GetValue(r, "lang").(string)
             if t, ok := translations[lang]; ok {
                 if val, ok := t[key]; ok {
                     return val
@@ -344,6 +323,12 @@ Use the `t` function in your templates:
 <a href="/users">{{t "users"}}</a>
 ```
 
+Access the current language directly via context:
+
+```html
+<html lang="{{.ctx.lang}}">
+```
+
 ### Testing
 
 Test by setting your browser's language preference to German, or by adding a header:
@@ -352,7 +337,7 @@ Test by setting your browser's language preference to German, or by adding a hea
 curl -H "Accept-Language: de" http://localhost:8080/users
 ```
 
-The page now displays in German. This pattern demonstrates how globals (for request-scoped state like detected language) and template functions (for transforming data) can work together.
+The page now displays in German. This pattern demonstrates how middleware (for request-scoped state like detected language) and template functions (for transforming data) can work together.
 
 ## Debugging Template Data Access
 
@@ -360,29 +345,29 @@ If you prefer accessing data via template functions instead of dot-notation, you
 
 ```go
 router.Use(
-    dave.Func("var", func(render *dave.Render) any {
+    dave.Func("var", func(r *http.Request) any {
         return func(name string) string {
-            val := render.PathVariables()[name]
+            val := dave.PathVariables(r)[name]
             slog.Debug("path variable accessed", "name", name, "value", val)
             return val
         }
     }),
-    dave.Func("global", func(render *dave.Render) any {
+    dave.Func("ctx", func(r *http.Request) any {
         return func(name string) any {
-            val := render.Globals()[name]
-            slog.Debug("global accessed", "name", name, "value", val)
+            val := dave.GetValue(r, name)
+            slog.Debug("context value accessed", "name", name, "value", val)
             return val
         }
     }),
-    dave.Func("form", func(render *dave.Render) any {
-        return func() *dave.FormResponse {
-            form := render.FormResponse()
+    dave.Func("form", func(r *http.Request) any {
+        return func() *dave.Form {
+            form := dave.FormResponse(r)
             slog.Debug("form accessed", "hasForm", form != nil)
             return form
         }
     }),
-    dave.Func("field", func(render *dave.Render) any {
-        return func(form *dave.FormResponse, name string) string {
+    dave.Func("field", func(r *http.Request) any {
+        return func(form *dave.Form, name string) string {
             if form == nil {
                 slog.Debug("field accessed (no form)", "name", name)
                 return ""
@@ -392,8 +377,8 @@ router.Use(
             return val
         }
     }),
-    dave.Func("error", func(render *dave.Render) any {
-        return func(form *dave.FormResponse, name string) []string {
+    dave.Func("error", func(r *http.Request) any {
+        return func(form *dave.Form, name string) []string {
             if form == nil {
                 slog.Debug("error accessed (no form)", "name", name)
                 return nil
@@ -412,8 +397,8 @@ Then use in templates:
 <!-- Instead of {{.path_variables.id}} -->
 {{var "id"}}
 
-<!-- Instead of {{.globals.currentUser}} -->
-{{global "currentUser"}}
+<!-- Instead of {{.ctx.currentUser}} -->
+{{ctx "currentUser"}}
 
 <!-- Instead of {{.form.Value "email" ""}} -->
 {{form | field "email"}}

@@ -7,7 +7,7 @@ Reference documentation for Dave, a file-based router for Go.
 - [Router](#router)
 - [Configuration](#configuration)
 - [Error Handling](#error-handling)
-- [Globals](#globals)
+- [Middleware](#middleware)
 - [Form Handling](#form-handling)
 - [Layouts](#layouts)
 - [Template Functions](#template-functions)
@@ -39,7 +39,7 @@ router := dave.NewRouter(os.DirFS("templates"))
 
 ### Use
 
-Registers configuration functions with the router. `ConfFunc` is a function type that configures the router - all of Dave's configuration helpers (`Config`, `Global`, `FormHandler`, etc.) return `ConfFunc`.
+Registers configuration functions with the router. `ConfFunc` is a function type that configures the router - all of Dave's configuration helpers (`Config`, `Middleware`, `FormHandler`, etc.) return `ConfFunc`.
 
 ```go
 func (router *Router) Use(configFunc ...ConfFunc)
@@ -50,7 +50,12 @@ func (router *Router) Use(configFunc ...ConfFunc)
 ```go
 router.Use(
     dave.Config(&dave.Conf{DevMode: true}),
-    dave.Global("app", func(r *dave.Render) any { return appConfig }),
+    dave.Middleware(func(next http.Handler) http.Handler {
+        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+            r = dave.SetValue(r, "app", appConfig)
+            next.ServeHTTP(w, r)
+        })
+    }),
     dave.FormHandler("submit", dave.Post(handler)),
 )
 ```
@@ -87,13 +92,12 @@ func Config(c *Conf) ConfFunc
 
 ### Conf struct
 
-| Field                | Type     | Default     | Description                                          |
-| -------------------- | -------- | ----------- | ---------------------------------------------------- |
-| `DevMode`            | `bool`   | `false`     | Rescan templates on every request                    |
-| `DefaultLayout`      | `string` | `"default"` | Layout name when none specified                      |
-| `TemplateExtension`  | `string` | `".tmpl"`   | File extension for templates                         |
-| `MaxFormSize`        | `int64`  | `10MB`      | Max size for multipart forms                         |
-| `AllowHandlerWrites` | `bool`   | `false`     | Allow handlers to write directly, skipping templates |
+| Field               | Type     | Default     | Description                       |
+| ------------------- | -------- | ----------- | --------------------------------- |
+| `DevMode`           | `bool`   | `false`     | Rescan templates on every request |
+| `DefaultLayout`     | `string` | `"default"` | Layout name when none specified   |
+| `TemplateExtension` | `string` | `".tmpl"`   | File extension for templates      |
+| `MaxFormSize`       | `int64`  | `10MB`      | Max size for multipart forms      |
 
 **Example:**
 
@@ -170,7 +174,7 @@ When an error matches (or wraps) the target error, Dave will:
 2. Render `fallback/<fallbackName>.tmpl` if it exists
 3. Otherwise return a plain text response
 
-**Wrapped errors are fully supported.** Dave uses `errors.Unwrap()` to check the entire error chain, so `fmt.Errorf("failed: %w", ErrUnauthorized)` will still match `ErrUnauthorized`.
+**Wrapped errors are supported.** Dave uses `errors.Unwrap()` to check the entire error chain, so `fmt.Errorf("failed: %w", ErrUnauthorized)` will still match `ErrUnauthorized`.
 
 **Setup:**
 
@@ -207,9 +211,9 @@ dave.Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
 })
 ```
 
-**In globals:**
+**In middleware (via SetValue):**
 
-Custom error types also work with globals. If a global returns an object with methods that return errors, Dave maps them to the appropriate error type.
+Custom error types also work with middleware-set context values. If a value set via `SetValue` is an object with methods that return errors, Dave maps them to the appropriate error type.
 
 ```go
 type AuthService struct{}
@@ -219,8 +223,11 @@ func (a *AuthService) CurrentUser() (*User, error) {
 }
 
 router.Use(
-    dave.Global("auth", func(render *dave.Render) any {
-        return &AuthService{}
+    dave.Middleware(func(next http.Handler) http.Handler {
+        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+            r = dave.SetValue(r, "auth", &AuthService{})
+            next.ServeHTTP(w, r)
+        })
     }),
 )
 ```
@@ -229,33 +236,35 @@ In templates:
 
 ```html
 <!-- Triggers unauthorized fallback if no user is logged in -->
-{{.globals.auth.CurrentUser.Name}}
+{{.ctx.auth.CurrentUser.Name}}
 ```
 
 When the template calls `.CurrentUser` and it returns `ErrUnauthorized`, Dave catches the error and renders `fallback/unauthorized.tmpl` with a 401 status code.
 
 ---
 
-## Globals
+## Middleware
 
-### Global
+### Middleware
 
-Registers a global value provider. Globals are evaluated on every request and are available in templates via `{{.globals.name}}`.
+Registers middleware that runs before template rendering. Middleware can set context values using `SetValue` which are available in templates via `{{.ctx.name}}`.
 
 ```go
-func Global(name string, globalFunc func(render *Render) any) ConfFunc
+func Middleware(mw func(http.Handler) http.Handler) ConfFunc
 ```
 
 **Example:**
 
 ```go
 router.Use(
-    dave.Global("currentUser", func(render *dave.Render) any {
-        token := render.Request().Header.Get("Authorization")
-        return auth.GetUserFromToken(token)
-    }),
-    dave.Global("config", func(render *dave.Render) any {
-        return appConfig
+    dave.Middleware(func(next http.Handler) http.Handler {
+        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+            token := r.Header.Get("Authorization")
+            user := auth.GetUserFromToken(token)
+            r = dave.SetValue(r, "currentUser", user)
+            r = dave.SetValue(r, "config", appConfig)
+            next.ServeHTTP(w, r)
+        })
     }),
 )
 ```
@@ -263,25 +272,79 @@ router.Use(
 **Template access:**
 
 ```html
-<p>Welcome, {{.globals.currentUser.Name}}</p>
-<p>Version: {{.globals.config.Version}}</p>
+<p>Welcome, {{.ctx.currentUser.Name}}</p>
+<p>Version: {{.ctx.config.Version}}</p>
 ```
 
-### GlobalValue
+### SetValue
 
-Retrieves a global value inside a form handler. This is the handler-side counterpart to `Global()` - use `Global()` to register values, and `GlobalValue()` to access them in handlers.
+Sets a context value that will be available in templates as `{{.ctx.name}}`.
 
 ```go
-func GlobalValue(r *http.Request, name string) any
+func SetValue(r *http.Request, key string, value any) *http.Request
+```
+
+**Example:**
+
+```go
+r = dave.SetValue(r, "user", currentUser)
+r = dave.SetValue(r, "theme", "dark")
+```
+
+### GetValue
+
+Retrieves a context value inside a form handler or middleware.
+
+```go
+func GetValue(r *http.Request, key string) any
 ```
 
 **Example:**
 
 ```go
 dave.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
-    userService := dave.GlobalValue(r, "userService").(*UserService)
+    userService := dave.GetValue(r, "userService").(*UserService)
     return userService.Create(r.FormValue("name"))
 })
+```
+
+### PathVariables
+
+Returns all path variables for the current request. Available after path parsing, including in middleware.
+
+```go
+func PathVariables(r *http.Request) map[string]string
+```
+
+**Example:**
+
+```go
+dave.Middleware(func(next http.Handler) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        pathVars := dave.PathVariables(r)
+        if id := pathVars["id"]; id != "" {
+            user := db.GetUser(id)
+            r = dave.SetValue(r, "user", user)
+        }
+        next.ServeHTTP(w, r)
+    })
+})
+```
+
+### Template
+
+Returns the resolved template name for the current request. Available in middleware after path parsing.
+
+```go
+func Template(r *http.Request) string
+```
+
+### Layout
+
+Returns the resolved layout name for the current request. Available in middleware after layout resolution.
+
+```go
+func Layout(r *http.Request) string
 ```
 
 ---
@@ -351,15 +414,15 @@ Include `d_form_handler` as a form field:
 </form>
 ```
 
-### FormResponse
+### Form
 
-For validation and state preservation, return a `*FormResponse`:
+For validation and state preservation, return a `*Form`:
 
 ```go
-func NewFormResponse() *FormResponse
+func NewForm() *Form
 ```
 
-**FormResponse fields:**
+**Form fields:**
 
 - `State` — `map[string][]string` for preserving form values
 - `ValidationErrors` — Field validation errors
@@ -369,7 +432,7 @@ func NewFormResponse() *FormResponse
 
 ```go
 dave.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
-    form := dave.NewFormResponse()
+    form := dave.NewForm()
 
     // Preserve submitted values
     form.State["email"] = []string{r.FormValue("email")}
@@ -402,7 +465,7 @@ dave.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
 | `{{.form.Errors "field"}}`          | `[]string` | Error messages for field  |
 | `{{.form.Value "field" "default"}}` | `string`   | Field value or default    |
 | `{{.form.Values "field"}}`          | `[]string` | All values (multi-select) |
-| `{{.form.Result}}`                  | `any`      | Same as `{{.result}}` if handler returns FormResponse     |
+| `{{.form.Result}}`                  | `any`      | Same as `{{.result}}` if handler returns Form     |
 
 **Template example:**
 
@@ -417,48 +480,52 @@ dave.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
 {{end}}
 ```
 
-### Response Writer Rules
+### Template Override
 
-By default, handlers can set headers and status codes but must NOT write to the response body. If a handler calls `w.Write()`, **Dave will panic**:
-
-```
-dave: form handlers must not write to the response body
-```
-
-This panic is intentional to prevent accidental response corruption. If your server doesn't have panic recovery middleware, this will crash the process. Either enable `AllowHandlerWrites` or ensure your handlers don't write to the response body.
-
-#### AllowHandlerWrites
-
-Set `AllowHandlerWrites: true` to let handlers write directly to the response, skipping template rendering. This is useful e.g. for HTMX responses that return small HTML fragments:
+Handlers can override which template is rendered using `SetTemplate`:
 
 ```go
-router.Use(
-    dave.Config(&dave.Conf{
-        AllowHandlerWrites: true,
+dave.FormHandler("editUser",
+    dave.Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
+        dave.SetTemplate(r, "edit")  // Render "edit" template instead of "index"
+        return user, nil
     }),
 )
+```
 
-dave.FormHandler("deleteUser",
-    dave.Delete(func(w http.ResponseWriter, r *http.Request) (any, error) {
-        db.DeleteUser(r.FormValue("id"))
-        w.Write([]byte("")) // Return empty to remove element
-        return nil, nil
-    }),
-)
+**Template Resolution:**
 
+1. First, Dave looks for the template relative to the current path directory
+2. If not found, treats the name as a full template path
+
+For example, if the request is to `/users/123` (matching `users/{id}/index.tmpl`) and the handler calls `SetTemplate(r, "edit")`:
+
+1. First tries: `users/{id}/edit.tmpl`
+2. If not found: `edit.tmpl`
+
+### Direct HTML Output
+
+Handlers can write HTML directly to the response using `w.Write()`. This bypasses template rendering and is useful for HTMX responses that return small fragments:
+
+```go
 dave.FormHandler("toggleLike",
     dave.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
         count := db.ToggleLike(r.FormValue("id"))
-        fmt.Fprintf(w, `<span class="likes">%d</span>`, count)
+        w.Write([]byte(fmt.Sprintf(`<span class="likes">%d</span>`, count)))
+        return nil, nil
+    }),
+)
+
+dave.FormHandler("deleteItem",
+    dave.Delete(func(w http.ResponseWriter, r *http.Request) (any, error) {
+        db.DeleteItem(r.FormValue("id"))
+        w.Write([]byte(""))  // Empty response removes element with hx-swap="outerHTML"
         return nil, nil
     }),
 )
 ```
 
-When `AllowHandlerWrites` is enabled:
-
-- If handler writes to body → response is sent as-is, template rendering is skipped
-- If handler doesn't write → template renders normally
+When a handler writes to the response, template rendering is skipped entirely. The `Content-Type` header is automatically set to `text/html; charset=utf-8`.
 
 ---
 
@@ -473,7 +540,7 @@ Create layouts in `templates/layouts/`. The default layout is `layouts/default.t
 <!DOCTYPE html>
 <html>
   <head>
-    <title>{{.globals.config.Title}}</title>
+    <title>{{.ctx.config.Title}}</title>
   </head>
   <body>
     <nav><!-- navigation --></nav>
@@ -522,29 +589,29 @@ Empty string = no layout. If a layout name is resolved but the template doesn't 
 
 ### Func
 
-Registers a template function. The factory receives `*Render` for request context access.
+Registers a template function. The factory receives the current `*http.Request` for request context access.
 
 ```go
-func Func(name string, factory func(*Render) any) ConfFunc
+func Func(name string, factory func(*http.Request) any) ConfFunc
 ```
 
 **Example:**
 
 ```go
 router.Use(
-    dave.Func("upper", func(render *dave.Render) any {
+    dave.Func("upper", func(r *http.Request) any {
         return func(s string) string {
             return strings.ToUpper(s)
         }
     }),
-    dave.Func("formatDate", func(render *dave.Render) any {
+    dave.Func("formatDate", func(r *http.Request) any {
         return func(t time.Time) string {
             return t.Format("Jan 2, 2006")
         }
     }),
-    dave.Func("isAdmin", func(render *dave.Render) any {
+    dave.Func("isAdmin", func(r *http.Request) any {
         return func() bool {
-            user := render.Globals()["currentUser"]
+            user := dave.GetValue(r, "currentUser")
             return user != nil && user.(*User).IsAdmin
         }
     }),
@@ -567,7 +634,7 @@ router.Use(
 2. **Match template** — Find best match, extract path variables
 3. **Resolve template name** — `D-TEMPLATE` header or `"index"`
 4. **Resolve layout** — Header → resolver → default
-5. **Evaluate globals** — Call all global functions
+5. **Run middleware** — Execute registered middleware (path variables available via `PathVariables(r)`)
 6. **Parse form** — Auto-parse form data
 7. **Execute handler** — If `d_form_handler` specified
 8. **Build data** — Assemble template context
@@ -605,48 +672,6 @@ Dave does not include built-in request logging. To add request logging, wrap the
 
 ## Advanced API
 
-### Render Type
-
-The `Render` object contains all request context:
-
-```go
-type Render struct {
-    // Methods:
-    Request() *http.Request
-    Template() string
-    PathVariables() map[string]string
-    Layout() string
-    Globals() map[string]any
-    HandlerResult() any
-    FormResponse() *FormResponse  // nil if not FormResponse
-}
-```
-
-### GetRender
-
-Get full render context in form handlers. Returns `nil` if called outside the request lifecycle.
-
-**Note:** Global functions and template functions already receive a `*Render` parameter directly—use `GetRender` only in form handlers where you need access to render context.
-
-```go
-func GetRender(ctx context.Context) *Render
-```
-
-**Example:**
-
-```go
-dave.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
-    render := dave.GetRender(r.Context())
-    if render == nil {
-        return nil, fmt.Errorf("render context not available")
-    }
-    template := render.Template()
-    layout := render.Layout()
-    allGlobals := render.Globals()
-    return nil, nil
-})
-```
-
 ### PathVariable
 
 Get a single path variable. Returns an empty string if called outside the request lifecycle.
@@ -661,16 +686,57 @@ func PathVariable(r *http.Request, name string) string
 id := dave.PathVariable(r, "id")
 ```
 
+### SetTemplate
+
+Override which template is rendered for the current request. The name is resolved relative to the current path directory first, then as a full path.
+
+```go
+func SetTemplate(r *http.Request, name string)
+```
+
+**Example:**
+
+```go
+dave.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
+    if hasErrors {
+        dave.SetTemplate(r, "edit")  // Re-render edit form
+        return form, nil
+    }
+    return result, nil
+})
+```
+
+### FormResponse
+
+Get the form state from the current request. Returns `nil` if no form handler was executed or if the handler didn't return a `*Form`.
+
+```go
+func FormResponse(r *http.Request) *Form
+```
+
+**Example:**
+
+```go
+dave.Func("formValue", func(r *http.Request) any {
+    return func(name string) string {
+        if form := dave.FormResponse(r); form != nil {
+            return form.Value(name, "")
+        }
+        return ""
+    }
+})
+```
+
 ---
 
 ## Template Data Reference
 
 | Variable                     | Type            | Description                           |
 | ---------------------------- | --------------- | ------------------------------------- |
-| `{{.globals.<name>}}`        | `any`           | Global values                         |
+| `{{.ctx.<name>}}`            | `any`           | Context values set via `SetValue`     |
 | `{{.path_variables.<name>}}` | `string`        | URL path variables                    |
 | `{{.result}}`                | `any`           | Handler return value                  |
-| `{{.form}}`                  | `*FormResponse` | Form state (if FormResponse returned) |
+| `{{.form}}`                  | `*Form` | Form state (if Form returned) |
 | `{{.error}}`                 | `string`        | Error message (fallback templates)    |
 | `{{.content}}`               | `template.HTML` | Page content (layout templates)       |
 
@@ -701,6 +767,6 @@ Call `router.Use()` only during initialization before starting the server. Calli
 ### Other Security Considerations
 
 - Add middleware to set headers like `X-Content-Type-Options`, `X-Frame-Options`, and `Content-Security-Policy`.
-- Implement CSRF tokens via middleware and expose the token to templates through a global.
+- Implement CSRF tokens via middleware and expose the token to templates via `SetValue`.
 - Use middleware to implement rate limiting.
 

@@ -21,10 +21,10 @@ type (
 	MiddlewareFunc      func(next http.Handler) http.Handler
 )
 
-func (handlerFunc FormHandlerFunc) call(w http.ResponseWriter, r *http.Request, rend *render, allowWrites bool) (any, bool, error) {
-	guardedWriter := &guardedResponseWriter{ResponseWriter: w, allowWrites: allowWrites}
-	result, err := handlerFunc(guardedWriter, r)
-	return result, guardedWriter.written, err
+func (handlerFunc FormHandlerFunc) call(w http.ResponseWriter, r *http.Request) (any, bool, error) {
+	tw := &trackingWriter{ResponseWriter: w}
+	result, err := handlerFunc(tw, r)
+	return result, tw.written, err
 }
 
 type errorTypeMapping struct {
@@ -47,17 +47,11 @@ type Router struct {
 type render struct {
 	request       *http.Request
 	template      string
+	pathDir       string
 	pathVariables map[string]string
 	ctx           map[string]any
 	handlerResult any
 	layout        string
-}
-
-func (r *render) formResponse() *FormResponse {
-	if formResponse, ok := r.handlerResult.(*FormResponse); ok {
-		return formResponse
-	}
-	return nil
 }
 
 type ctxValuesKey struct{}
@@ -65,6 +59,18 @@ type ctxValuesKey struct{}
 type renderContextKey struct{}
 
 type pathVariablesKey struct{}
+
+type templateOverride struct {
+	name string
+}
+
+type templateOverrideKey struct{}
+
+func SetTemplate(r *http.Request, name string) {
+	if o, ok := r.Context().Value(templateOverrideKey{}).(*templateOverride); ok {
+		o.name = name
+	}
+}
 
 func SetValue(r *http.Request, key string, value any) *http.Request {
 	values, _ := r.Context().Value(ctxValuesKey{}).(map[string]any)
@@ -104,11 +110,10 @@ func Config(c *Conf) ConfFunc {
 }
 
 type Conf struct {
-	DevMode            bool
-	DefaultLayout      string
-	TemplateExtension  string
-	MaxFormSize        int64
-	AllowHandlerWrites bool
+	DevMode           bool
+	DefaultLayout     string
+	TemplateExtension string
+	MaxFormSize       int64
 }
 
 func (c *Conf) getDefaultLayout() string {
@@ -223,26 +228,23 @@ func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	templateName, pathVariables, daveErr := router.parseRequestPath(r)
+	render, daveErr := router.parseRequestPath(r)
 	if daveErr != nil {
 		rootTemplate, _ := router.templates.Clone()
 		router.renderError(w, rootTemplate, daveErr)
 		return
 	}
 
-	r = r.WithContext(context.WithValue(r.Context(), pathVariablesKey{}, pathVariables))
+	override := &templateOverride{}
+	r = r.WithContext(context.WithValue(r.Context(), pathVariablesKey{}, render.pathVariables))
+	r = r.WithContext(context.WithValue(r.Context(), templateOverrideKey{}, override))
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		rend := &render{
-			request:       r,
-			pathVariables: pathVariables,
-			handlerResult: &FormResponse{},
-			ctx:           getCtxValues(r),
-			template:      templateName,
-			layout:        router.getLayout(r),
-		}
+		render.request = r
+		render.ctx = getCtxValues(r)
+		render.layout = router.getLayout(r)
 
-		r = r.WithContext(context.WithValue(r.Context(), renderContextKey{}, rend))
+		r = r.WithContext(context.WithValue(r.Context(), renderContextKey{}, render))
 
 		rootTemplate, _ := router.templates.Clone()
 
@@ -253,24 +255,27 @@ func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if formHandler != nil {
-			handlerResult, handlerWrote, err := formHandler.call(w, r, rend, router.config.AllowHandlerWrites)
+			handlerResult, wroteHTML, err := formHandler.call(w, r)
 			if err != nil {
 				router.renderError(w, rootTemplate, err)
 				return
 			}
-			if handlerWrote {
+			render.handlerResult = handlerResult
+			if wroteHTML {
 				return
 			}
-			rend.handlerResult = handlerResult
+			if override.name != "" {
+				render.template = router.resolveTemplate(override.name, render.pathDir)
+			}
 		}
 
-		content, err := router.RenderTemplate(r, rend.template)
+		content, err := router.RenderTemplate(r, render.template)
 		if err != nil {
 			router.renderError(w, rootTemplate, err)
 			return
 		}
 
-		if rend.layout == "" {
+		if render.layout == "" {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.Write(content)
 			return
@@ -284,10 +289,10 @@ func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		layoutData := map[string]any{
 			"content": template.HTML(content),
-			"ctx":     rend.ctx,
+			"ctx":     render.ctx,
 		}
 		pageWriter := &strings.Builder{}
-		err = rootTemplate.ExecuteTemplate(pageWriter, rend.layout, layoutData)
+		err = rootTemplate.ExecuteTemplate(pageWriter, render.layout, layoutData)
 		if err != nil {
 			router.renderError(w, rootTemplate, err)
 			return
@@ -448,9 +453,9 @@ func (router *Router) RenderTemplate(r *http.Request, templateName string) ([]by
 	}
 	if rend != nil {
 		data["path_variables"] = rend.pathVariables
-		if formResponse, ok := rend.handlerResult.(*FormResponse); ok {
-			data["form"] = formResponse
-			data["result"] = formResponse.Result
+		if form, ok := rend.handlerResult.(*Form); ok {
+			data["form"] = form
+			data["result"] = form.Result
 		} else {
 			data["result"] = rend.handlerResult
 		}
@@ -463,12 +468,12 @@ func (router *Router) RenderTemplate(r *http.Request, templateName string) ([]by
 	return []byte(buf.String()), nil
 }
 
-func (router *Router) parseRequestPath(r *http.Request) (string, map[string]string, *daveError) {
+func (router *Router) parseRequestPath(r *http.Request) (*render, *daveError) {
 	path := r.Header.Get("D-TEMPLATE")
 	if path == "" {
 		path = "index"
 	} else if !isValidTemplateName(path) {
-		return "", nil, NotFound(fmt.Errorf("invalid template name"))
+		return nil, NotFound(fmt.Errorf("invalid template name"))
 	}
 	path = strings.TrimSuffix(r.URL.Path, "/") + "/" + path
 	reqSegments := strings.Split(path[1:], "/")
@@ -507,9 +512,18 @@ func (router *Router) parseRequestPath(r *http.Request) (string, map[string]stri
 		}
 	}
 	if templatePath == "" {
-		return "", nil, NotFound(fmt.Errorf("no template at %s", path))
+		return nil, NotFound(fmt.Errorf("no template at %s", path))
 	}
-	return templatePath, pathVariables, nil
+	pathDir := ""
+	if idx := strings.LastIndex(templatePath, "/"); idx >= 0 {
+		pathDir = templatePath[:idx]
+	}
+	return &render{
+		template:      templatePath,
+		pathDir:       pathDir,
+		pathVariables: pathVariables,
+		handlerResult: &Form{},
+	}, nil
 }
 
 func stripTemplateSuffix(t string, ext string) string {
@@ -541,11 +555,11 @@ func PathVariables(r *http.Request) map[string]string {
 }
 
 func Template(r *http.Request) string {
-	rend, ok := r.Context().Value(renderContextKey{}).(*render)
-	if !ok || rend == nil {
+	render, ok := r.Context().Value(renderContextKey{}).(*render)
+	if !ok || render == nil {
 		return ""
 	}
-	return rend.template
+	return render.template
 }
 
 func Layout(r *http.Request) string {
@@ -554,6 +568,17 @@ func Layout(r *http.Request) string {
 		return ""
 	}
 	return rend.layout
+}
+
+func FormResponse(r *http.Request) *Form {
+	rend, ok := r.Context().Value(renderContextKey{}).(*render)
+	if !ok || rend == nil {
+		return nil
+	}
+	if form, ok := rend.handlerResult.(*Form); ok {
+		return form
+	}
+	return nil
 }
 
 type daveError struct {
@@ -620,16 +645,25 @@ func (router *Router) mapCustomErrorType(err error) *daveError {
 	return Unexpected(originalErr)
 }
 
-type guardedResponseWriter struct {
+type trackingWriter struct {
 	http.ResponseWriter
-	allowWrites bool
-	written     bool
+	written bool
 }
 
-func (g *guardedResponseWriter) Write(b []byte) (int, error) {
-	if !g.allowWrites {
-		panic("dave: form handlers must not write to the response body")
+func (tw *trackingWriter) Write(b []byte) (int, error) {
+	if len(b) > 0 {
+		tw.written = true
+		tw.ResponseWriter.Header().Set("Content-Type", "text/html; charset=utf-8")
 	}
-	g.written = true
-	return g.ResponseWriter.Write(b)
+	return tw.ResponseWriter.Write(b)
+}
+
+func (router *Router) resolveTemplate(name, pathDir string) string {
+	if pathDir != "" {
+		relativePath := pathDir + "/" + name
+		if router.templates.Lookup(relativePath) != nil {
+			return relativePath
+		}
+	}
+	return name
 }

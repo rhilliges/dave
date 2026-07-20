@@ -19,7 +19,7 @@ templates/
 
 - [**File-based routing**](#core-concepts) — URLs map to template files automatically
 - [**Path variables**](#path-variables) — `/users/{id}` extracts `id` from the URL
-- [**Globals**](#globals) — Share data and services across templates
+- [**Middleware**](#middleware) — Share data and services across templates via context
 - [**Form handlers**](#form-handlers) — Handle submissions with validation and error handling
 - [**Layouts**](#layouts) — Wrap pages with shared headers, footers, navigation
 - [**Error pages**](#error-handling) — Custom 404 and 500 templates with proper status codes
@@ -76,33 +76,40 @@ templates/users/{id}/index.tmpl  →  /users/123
 
 Access in templates: `{{.path_variables.id}}`
 
-### Globals
+### Middleware
 
-Share data across all templates:
+Share data across all templates using middleware and context values:
 
 ```go
 router.Use(
-    dave.Global("currentUser", func(render *dave.Render) any {
-        token := render.Request().Header.Get("Authorization")
-        return auth.GetUser(token)
+    dave.Middleware(func(next http.Handler) http.Handler {
+        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+            token := r.Header.Get("Authorization")
+            user := auth.GetUser(token)
+            r = dave.SetValue(r, "currentUser", user)
+            next.ServeHTTP(w, r)
+        })
     }),
 )
 ```
 
-Access in templates: `{{.globals.currentUser.Name}}`
+Access in templates: `{{.ctx.currentUser.Name}}`
 
 Register a service object with methods you can call from templates:
 
 ```go
 router.Use(
-    dave.Global("users", func(render *dave.Render) any {
-        return userService  // has Get(id), All(), etc.
+    dave.Middleware(func(next http.Handler) http.Handler {
+        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+            r = dave.SetValue(r, "users", userService)
+            next.ServeHTTP(w, r)
+        })
     }),
- )
+)
 ```
 
 ```html
-{{with .globals.users.Get .path_variables.id}}
+{{with .ctx.users.Get .path_variables.id}}
 <h1>{{.Name}}</h1>
 <p>{{.Email}}</p>
 {{end}}
@@ -112,12 +119,15 @@ Or access path variables to load data for the current page:
 
 ```go
 router.Use(
-    dave.Global("user", func(render *dave.Render) any {
-        id := render.PathVariables()["id"]
-        if id == "" {
-            return nil
-        }
-        return db.GetUser(id)
+    dave.Middleware(func(next http.Handler) http.Handler {
+        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+            pathVars := dave.PathVariables(r)
+            if id := pathVars["id"]; id != "" {
+                user := db.GetUser(id)
+                r = dave.SetValue(r, "user", user)
+            }
+            next.ServeHTTP(w, r)
+        })
     }),
 )
 ```
@@ -125,7 +135,7 @@ router.Use(
 Then in `templates/users/{id}/index.tmpl`:
 
 ```html
-{{with .globals.user}}
+{{with .ctx.user}}
 <h1>{{.Name}}</h1>
 <p>{{.Email}}</p>
 {{else}}
@@ -159,7 +169,7 @@ Trigger with a hidden input:
 </form>
 ```
 
-Handler results are available as `{{.result}}` in templates. See [Form Handling](docs/reference.md#form-handling) for validation, `FormResponse`, and more.
+Handler results are available as `{{.result}}` in templates. See [Form Handling](docs/reference.md#form-handling) for validation, `Form`, and more.
 
 ### Error Handling
 
@@ -194,7 +204,7 @@ router.Use(
 )
 ```
 
-See [Error Handling](docs/reference.md#error-handling) for custom error types, error handling in globals, and more.
+See [Error Handling](docs/reference.md#error-handling) for custom error types, error handling in middleware, and more.
 
 ### Layouts
 
@@ -221,7 +231,7 @@ Add custom functions:
 
 ```go
 router.Use(
-    dave.Func("upper", func(render *dave.Render) any {
+    dave.Func("upper", func(r *http.Request) any {
         return func(s string) string {
             return strings.ToUpper(s)
         }
@@ -236,11 +246,10 @@ Use in templates: `{{upper .user.Name}}`
 ```go
 router.Use(
     dave.Config(&dave.Conf{
-        DevMode:            true,     // Reload templates on every request
-        DefaultLayout:      "main",   // Default: "default"
-        TemplateExtension:  ".html",  // Default: ".tmpl"
-        MaxFormSize:        32 << 20, // Default: 10MB
-        AllowHandlerWrites: true,     // Allow handlers to bypass templates
+        DevMode:           true,     // Reload templates on every request
+        DefaultLayout:     "main",   // Default: "default"
+        TemplateExtension: ".html",  // Default: ".tmpl"
+        MaxFormSize:       32 << 20, // Default: 10MB
     }),
 )
 ```
@@ -261,7 +270,7 @@ Any template can reference any other template by its full path:
 
 ```html
 <!-- templates/users/profile/index.tmpl -->
-{{template "components/avatar" .globals.user}}
+{{template "components/avatar" .ctx.user}}
 {{template "shared/sidebar" .}}
 ```
 

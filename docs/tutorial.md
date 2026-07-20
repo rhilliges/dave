@@ -92,9 +92,9 @@ users-app/
         └── default.tmpl
 ```
 
-## 2. Display Users with Globals
+## 2. Display Users with Middleware
 
-Globals provide shared data to all templates. Create a user store and display users as cards.
+Middleware lets you share data across all templates using context values. Create a user store and display users as cards.
 
 Update `main.go`:
 
@@ -170,8 +170,11 @@ func main() {
     store := NewUserStore()
 
     r.Use(
-        dave.Global("users", func(render *dave.Render) any {
-            return store
+        dave.Middleware(func(next http.Handler) http.Handler {
+            return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+                req = dave.SetValue(req, "users", store)
+                next.ServeHTTP(w, req)
+            })
         }),
     )
 
@@ -186,7 +189,7 @@ Create `templates/users/index.tmpl`:
 <h1 class="text-2xl font-bold mb-6">Users</h1>
 
 <div class="grid gap-4">
-  {{range .globals.users.All}}
+  {{range .ctx.users.All}}
   <div class="bg-white rounded-lg shadow p-6">
     <h2 class="text-xl font-semibold">{{.Name}}</h2>
     <p class="text-gray-600">{{.Email}}</p>
@@ -208,10 +211,13 @@ Update `main.go` to register a template function:
 
 ```go
 r.Use(
-    dave.Global("users", func(render *dave.Render) any {
-        return store
+    dave.Middleware(func(next http.Handler) http.Handler {
+        return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+            req = dave.SetValue(req, "users", store)
+            next.ServeHTTP(w, req)
+        })
     }),
-    dave.Func("formatDate", func(render *dave.Render) any {
+    dave.Func("formatDate", func(r *http.Request) any {
         return func(t time.Time) string {
             return t.Format("Jan 2, 2006")
         }
@@ -225,7 +231,7 @@ Update `templates/users/index.tmpl` to use the function:
 <h1 class="text-2xl font-bold mb-6">Users</h1>
 
 <div class="grid gap-4">
-  {{range .globals.users.All}}
+  {{range .ctx.users.All}}
   <div class="bg-white rounded-lg shadow p-6">
     <h2 class="text-xl font-semibold">{{.Name}}</h2>
     <p class="text-gray-600">{{.Email}}</p>
@@ -249,10 +255,13 @@ Add a form handler to `main.go`:
 
 ```go
 r.Use(
-    dave.Global("users", func(render *dave.Render) any {
-        return store
+    dave.Middleware(func(next http.Handler) http.Handler {
+        return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+            req = dave.SetValue(req, "users", store)
+            next.ServeHTTP(w, req)
+        })
     }),
-    dave.Func("formatDate", func(render *dave.Render) any {
+    dave.Func("formatDate", func(r *http.Request) any {
         return func(t time.Time) string {
             return t.Format("Jan 2, 2006")
         }
@@ -317,7 +326,7 @@ Update `templates/users/index.tmpl` to include the form. Note the hidden `d_form
   </div>
 
   <!-- User List -->
-  {{range .globals.users.All}}
+  {{range .ctx.users.All}}
   <div class="bg-white rounded-lg shadow p-6">
     <h2 class="text-xl font-semibold">{{.Name}}</h2>
     <p class="text-gray-600">{{.Email}}</p>
@@ -394,7 +403,7 @@ Update `templates/users/index.tmpl`:
   </div>
 
   <!-- User List -->
-  {{range .globals.users.All}} {{template "components/user-card" .}} {{else}}
+  {{range .ctx.users.All}} {{template "components/user-card" .}} {{else}}
   <p class="text-gray-500">No users yet.</p>
   {{end}}
 </div>
@@ -416,10 +425,13 @@ r.Use(
         }
         return "default"
     }),
-    dave.Global("users", func(render *dave.Render) any {
-        return store
+    dave.Middleware(func(next http.Handler) http.Handler {
+        return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+            req = dave.SetValue(req, "users", store)
+            next.ServeHTTP(w, req)
+        })
     }),
-    dave.Func("formatDate", func(render *dave.Render) any {
+    dave.Func("formatDate", func(r *http.Request) any {
         return func(t time.Time) string {
             return t.Format("Jan 2, 2006")
         }
@@ -534,7 +546,7 @@ Create `templates/users/{id}/index.tmpl`:
   >← Back to Users</a
 >
 
-{{with .globals.users.Get .path_variables.id}} {{template "components/user-card"
+{{with .ctx.users.Get .path_variables.id}} {{template "components/user-card"
 .}} {{else}}
 <p class="text-gray-500">User not found.</p>
 {{end}}
@@ -551,7 +563,7 @@ Update the form handler in `main.go`:
 ```go
 dave.FormHandler("createUser",
     dave.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
-        form := dave.NewFormResponse()
+        form := dave.NewForm()
 
         name := r.FormValue("name")
         email := r.FormValue("email")
@@ -649,7 +661,7 @@ Update the form in `templates/users/index.tmpl` to show errors and preserve valu
     </div>
 
     <!-- User List -->
-    {{range .globals.users.All}}
+    {{range .ctx.users.All}}
     {{template "components/user-card" .}}
     {{else}}
     <p class="text-gray-500">No users yet.</p>
@@ -673,7 +685,7 @@ Create `templates/fallback/not_found.tmpl`:
 </div>
 ```
 
-Now update the user detail template to return a 404 when the user doesn't exist. The trick is to use a global that can trigger the error. Update `main.go` to add a `getUser` global:
+Now update the user detail template to return a 404 when the user doesn't exist. The trick is to use middleware that provides a helper function that can trigger the error. Update `main.go` to add a `getUser` function to the context:
 
 ```go
 r.Use(
@@ -683,30 +695,31 @@ r.Use(
         }
         return "default"
     }),
-    dave.Global("users", func(render *dave.Render) any {
-        return store
-    }),
-    dave.Global("getUser", func(render *dave.Render) any {
-        return func(id string) (*User, error) {
-            user := store.Get(id)
-            if user == nil {
-                return nil, dave.NotFound(fmt.Errorf("user %s not found", id))
-            }
-            return user, nil
-        }
+    dave.Middleware(func(next http.Handler) http.Handler {
+        return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+            req = dave.SetValue(req, "users", store)
+            req = dave.SetValue(req, "getUser", func(id string) (*User, error) {
+                user := store.Get(id)
+                if user == nil {
+                    return nil, dave.NotFound(fmt.Errorf("user %s not found", id))
+                }
+                return user, nil
+            })
+            next.ServeHTTP(w, req)
+        })
     }),
     // ... rest of your config
 )
 ```
 
-Update `templates/users/{id}/index.tmpl` to use the new global:
+Update `templates/users/{id}/index.tmpl` to use the new helper:
 
 ```html
 <a href="/users" class="text-blue-600 hover:underline mb-4 inline-block"
   >← Back to Users</a
 >
 
-{{with .globals.getUser .path_variables.id}} {{template "components/user-card"
+{{with .ctx.getUser .path_variables.id}} {{template "components/user-card"
 .}} {{end}}
 ```
 
@@ -715,7 +728,7 @@ Now visiting `/users/999` displays the custom 404 page with the error message an
 Finally, let's make the user cards clickable. Update the user list in `templates/users/index.tmpl`:
 
 ```html
-{{range .globals.users.All}}
+{{range .ctx.users.All}}
 <a href="/users/{{.ID}}" class="block">
   {{template "components/user-card" .}}
 </a>
@@ -835,26 +848,27 @@ func main() {
             }
             return "default"
         }),
-        dave.Global("users", func(render *dave.Render) any {
-            return store
+        dave.Middleware(func(next http.Handler) http.Handler {
+            return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+                req = dave.SetValue(req, "users", store)
+                req = dave.SetValue(req, "getUser", func(id string) (*User, error) {
+                    user := store.Get(id)
+                    if user == nil {
+                        return nil, dave.NotFound(fmt.Errorf("user %s not found", id))
+                    }
+                    return user, nil
+                })
+                next.ServeHTTP(w, req)
+            })
         }),
-        dave.Global("getUser", func(render *dave.Render) any {
-            return func(id string) (*User, error) {
-                user := store.Get(id)
-                if user == nil {
-                    return nil, dave.NotFound(fmt.Errorf("user %s not found", id))
-                }
-                return user, nil
-            }
-        }),
-        dave.Func("formatDate", func(render *dave.Render) any {
+        dave.Func("formatDate", func(r *http.Request) any {
             return func(t time.Time) string {
                 return t.Format("Jan 2, 2006")
             }
         }),
         dave.FormHandler("createUser",
             dave.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
-                form := dave.NewFormResponse()
+                form := dave.NewForm()
 
                 name := r.FormValue("name")
                 email := r.FormValue("email")
@@ -907,11 +921,11 @@ You've learned Dave's core features:
 
 - **File-based routing** - URLs map to template files
 - **Layouts** - Wrap pages with common structure
-- **Globals** - Share data and services across templates
+- **Middleware** - Share data and services across templates via context
 - **Template functions** - Transform data in templates
 - **Path variables** - Extract dynamic segments from URLs
 - **Form handlers** - Process form submissions
-- **FormResponse** - Handle validation and preserve form state
+- **Form** - Handle validation and preserve form state
 - **Layout resolvers** - Dynamically choose layouts (great for HTMX)
 - **Error handling** - Return proper errors with fallback templates
 
