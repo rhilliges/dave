@@ -15,16 +15,16 @@ import (
 
 type (
 	FormHandlerConfFunc func(router *Router, varName string)
-	FormHandlerFunc     func(w http.ResponseWriter, r *http.Request) (any, error)
+	FormHandlerFunc     func(w http.ResponseWriter, r *http.Request) (*Form, error)
 	LayoutResolverFunc  func(r *http.Request) string
 	ConfFunc            func(router *Router)
 	MiddlewareFunc      func(next http.Handler) http.Handler
 )
 
-func (handlerFunc FormHandlerFunc) call(w http.ResponseWriter, r *http.Request) (any, bool, error) {
+func (handlerFunc FormHandlerFunc) call(w http.ResponseWriter, r *http.Request) (*Form, bool, error) {
 	tw := &trackingWriter{ResponseWriter: w}
-	result, err := handlerFunc(tw, r)
-	return result, tw.written, err
+	form, err := handlerFunc(tw, r)
+	return form, tw.written, err
 }
 
 type errorTypeMapping struct {
@@ -50,7 +50,7 @@ type render struct {
 	pathDir       string
 	pathVariables map[string]string
 	ctx           map[string]any
-	handlerResult any
+	form          *Form
 	layout        string
 }
 
@@ -72,13 +72,27 @@ func SetTemplate(r *http.Request, name string) {
 	}
 }
 
+var reservedKeys = map[string]bool{
+	"path_variables": true,
+	"form":           true,
+	"error":          true,
+	"content":        true,
+}
+
+// SetValue sets a context value that will be available in templates as {{.key}}.
+// Panics if key is reserved. See documentation for reserved keys.
 func SetValue(r *http.Request, key string, value any) *http.Request {
+	if reservedKeys[key] {
+		panic(fmt.Sprintf("dave: cannot use reserved key %q in SetValue", key))
+	}
 	values, _ := r.Context().Value(ctxValuesKey{}).(map[string]any)
 	if values == nil {
 		values = make(map[string]any)
+		values[key] = value
+		return r.WithContext(context.WithValue(r.Context(), ctxValuesKey{}, values))
 	}
 	values[key] = value
-	return r.WithContext(context.WithValue(r.Context(), ctxValuesKey{}, values))
+	return r
 }
 
 func GetValue(r *http.Request, key string) any {
@@ -199,9 +213,7 @@ func MethodHandler(m string, handler FormHandlerFunc) FormHandlerConfFunc {
 		if variableResolvers == nil {
 			router.formHandlers[varName] = make(map[string]FormHandlerFunc)
 		}
-		router.formHandlers[varName][m] = func(w http.ResponseWriter, r *http.Request) (any, error) {
-			return handler(w, r)
-		}
+		router.formHandlers[varName][m] = handler
 	}
 }
 
@@ -236,6 +248,8 @@ func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	override := &templateOverride{}
+	ctxValues := make(map[string]any)
+	r = r.WithContext(context.WithValue(r.Context(), ctxValuesKey{}, ctxValues))
 	r = r.WithContext(context.WithValue(r.Context(), pathVariablesKey{}, render.pathVariables))
 	r = r.WithContext(context.WithValue(r.Context(), templateOverrideKey{}, override))
 
@@ -255,12 +269,12 @@ func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if formHandler != nil {
-			handlerResult, wroteHTML, err := formHandler.call(w, r)
+			form, wroteHTML, err := formHandler.call(w, r)
 			if err != nil {
 				router.renderError(w, rootTemplate, err)
 				return
 			}
-			render.handlerResult = handlerResult
+			render.form = form
 			if wroteHTML {
 				return
 			}
@@ -287,10 +301,8 @@ func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		rootTemplate.Funcs(renderFuncs)
 
-		layoutData := map[string]any{
-			"content": template.HTML(content),
-			"ctx":     render.ctx,
-		}
+		layoutData := getCtxValues(r)
+		layoutData["content"] = template.HTML(content)
 		pageWriter := &strings.Builder{}
 		err = rootTemplate.ExecuteTemplate(pageWriter, render.layout, layoutData)
 		if err != nil {
@@ -448,16 +460,11 @@ func (router *Router) RenderTemplate(r *http.Request, templateName string) ([]by
 		return nil, fmt.Errorf("template not found: %s", templateName)
 	}
 
-	data := map[string]any{
-		"ctx": getCtxValues(r),
-	}
+	data := getCtxValues(r)
 	if rend != nil {
 		data["path_variables"] = rend.pathVariables
-		if form, ok := rend.handlerResult.(*Form); ok {
-			data["form"] = form
-			data["result"] = form.Result
-		} else {
-			data["result"] = rend.handlerResult
+		if rend.form != nil {
+			data["form"] = rend.form
 		}
 	}
 
@@ -522,7 +529,6 @@ func (router *Router) parseRequestPath(r *http.Request) (*render, *daveError) {
 		template:      templatePath,
 		pathDir:       pathDir,
 		pathVariables: pathVariables,
-		handlerResult: &Form{},
 	}, nil
 }
 
@@ -575,10 +581,7 @@ func FormResponse(r *http.Request) *Form {
 	if !ok || rend == nil {
 		return nil
 	}
-	if form, ok := rend.handlerResult.(*Form); ok {
-		return form
-	}
-	return nil
+	return rend.form
 }
 
 type daveError struct {

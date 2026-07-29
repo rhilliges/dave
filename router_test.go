@@ -64,6 +64,9 @@ import (
 // - figure out middlewares/how to integrate middleware? (authentication, authorization)
 // - register path resolvers using reflection on the package path vs. a path variable - see if feasible
 // - custom renderer
+// - Document RenderTemplate method or make it unexported
+// - Optionally add a "Types" reference section for exported type signatures
+// - Optionally document the ValidationErrors type
 
 type testTemplate struct {
 	location string
@@ -187,7 +190,7 @@ func TestRouter_TemplateHeader(t *testing.T) {
 
 func TestRouter_UseMiddleware(t *testing.T) {
 	templates := []testTemplate{
-		{"v1/index.tmpl", "{{.ctx.value1}},{{.ctx.value2}}"},
+		{"v1/index.tmpl", "{{.value1}},{{.value2}}"},
 	}
 	router, cleanup := prepareTest(templates)
 	defer cleanup()
@@ -214,7 +217,7 @@ func TestRouter_UseMiddleware(t *testing.T) {
 
 func TestRouter_MiddlewareCanAccessRequest(t *testing.T) {
 	templates := []testTemplate{
-		{"v1/index.tmpl", "{{.ctx.lang}}"},
+		{"v1/index.tmpl", "{{.lang}}"},
 	}
 	router, cleanup := prepareTest(templates)
 	defer cleanup()
@@ -252,7 +255,7 @@ func TestRouter_MiddlewareCanAccessRequest(t *testing.T) {
 
 func TestRouter_MiddlewareCanAccessPathVariables(t *testing.T) {
 	templates := []testTemplate{
-		{"users/{id}/index.tmpl", "{{.ctx.userGreeting}}"},
+		{"users/{id}/index.tmpl", "{{.userGreeting}}"},
 	}
 	router, cleanup := prepareTest(templates)
 	defer cleanup()
@@ -277,8 +280,8 @@ func TestRouter_MiddlewareCanAccessPathVariables(t *testing.T) {
 
 func TestRouter_CtxAccessibleInLayouts(t *testing.T) {
 	templates := []testTemplate{
-		{"layouts/default.tmpl", "layout-user:{{.ctx.currentUser}} content:{{.content}}"},
-		{"path/to/index.tmpl", "page-user:{{.ctx.currentUser}}"},
+		{"layouts/default.tmpl", "layout-user:{{.currentUser}} content:{{.content}}"},
+		{"path/to/index.tmpl", "page-user:{{.currentUser}}"},
 	}
 	router, cleanup := prepareTest(templates)
 	defer cleanup()
@@ -384,7 +387,7 @@ func TestRouter_RenderFuncCanAccessCtx(t *testing.T) {
 
 func TestRouter_Get(t *testing.T) {
 	templates := []testTemplate{
-		{"v1/{var1}/v2/{var2}/index.tmpl", "{{.result}},{{.path_variables.var2}}"},
+		{"v1/{var1}/v2/{var2}/index.tmpl", "{{.data}},{{.path_variables.var2}}"},
 	}
 	router, cleanup := prepareTest(templates)
 	defer cleanup()
@@ -397,16 +400,16 @@ func TestRouter_Get(t *testing.T) {
 	resolverCalled := false
 
 	router.Use(
-		FormHandler("handler1", Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
+		FormHandler("handler1", Get(func(w http.ResponseWriter, r *http.Request) (*Form, error) {
 			pathVariables := PathVariables(r)
 			resolverCalled = true
 			value := PathVariable(r, "var1")
 			assert.Equal(t, "value1", value)
 			assert.Equal(t, "value1", pathVariables["var1"])
 			assert.Equal(t, "value2", pathVariables["var2"])
-			// TODO add assertion
 			Template(r)
-			return "resolvedValue", nil
+			SetValue(r, "data", "resolvedValue")
+			return nil, nil
 		}),
 		),
 	)
@@ -421,7 +424,7 @@ func TestRouter_Get(t *testing.T) {
 
 func TestRouter_Post(t *testing.T) {
 	templates := []testTemplate{
-		{"v1/{var1}/{var2}/index.tmpl", "{{.path_variables.var1}},{{.var1}},{{.var2}}"},
+		{"v1/{var1}/{var2}/index.tmpl", "{{.path_variables.var1}}"},
 	}
 	router, cleanup := prepareTest(templates)
 	defer cleanup()
@@ -431,14 +434,12 @@ func TestRouter_Post(t *testing.T) {
 	router.Use(
 		FormHandler(
 			"var1",
-			Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
-				// daveRender := GetRender(r.Context())
-				// body, _ := io.ReadAll(r.Body)
+			Post(func(w http.ResponseWriter, r *http.Request) (*Form, error) {
 				assert.Equal(t, "d_form_handler=var1&input1=value1", r.Form.Encode())
 				postHandlerCalled = true
-				return "resolved1", nil
+				return nil, nil
 			}),
-			Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
+			Get(func(w http.ResponseWriter, r *http.Request) (*Form, error) {
 				getHandlerCalled = true
 				return nil, nil
 			}),
@@ -461,7 +462,7 @@ func TestRouter_Post(t *testing.T) {
 
 func TestRouter_Put(t *testing.T) {
 	templates := []testTemplate{
-		{"v1/{var1}/{var2}/index.tmpl", "{{.path_variables.var1}},{{.result}}"},
+		{"v1/{var1}/{var2}/index.tmpl", "{{.path_variables.var1}},{{.data}}"},
 	}
 	router, cleanup := prepareTest(templates)
 	defer cleanup()
@@ -470,12 +471,13 @@ func TestRouter_Put(t *testing.T) {
 	router.Use(
 		FormHandler(
 			"var1",
-			Put(func(w http.ResponseWriter, r *http.Request) (any, error) {
+			Put(func(w http.ResponseWriter, r *http.Request) (*Form, error) {
 				r.ParseForm()
 				w.WriteHeader(202)
 				assert.Equal(t, "value1", r.PostForm.Get("input1"))
 				handlerCalled = true
-				return "resolvedValue", nil
+				SetValue(r, "data", "resolvedValue")
+				return nil, nil
 			}),
 		),
 	)
@@ -499,7 +501,7 @@ func TestRouter_Put(t *testing.T) {
 
 func TestRouter_Patch(t *testing.T) {
 	templates := []testTemplate{
-		{"v1/{var1}/{var2}/index.tmpl", "{{.path_variables.var1}},{{.result}}"},
+		{"v1/{var1}/{var2}/index.tmpl", "{{.path_variables.var1}},{{.data}}"},
 	}
 	router, cleanup := prepareTest(templates)
 	defer cleanup()
@@ -508,12 +510,13 @@ func TestRouter_Patch(t *testing.T) {
 	router.Use(
 		FormHandler(
 			"var1",
-			Patch(func(w http.ResponseWriter, r *http.Request) (any, error) {
+			Patch(func(w http.ResponseWriter, r *http.Request) (*Form, error) {
 				r.ParseForm()
 				w.WriteHeader(202)
 				assert.Equal(t, "value1", r.PostForm.Get("input1"))
 				handlerCalled = true
-				return "resolvedValue", nil
+				SetValue(r, "data", "resolvedValue")
+				return nil, nil
 			}),
 		),
 	)
@@ -537,7 +540,7 @@ func TestRouter_Patch(t *testing.T) {
 
 func TestRouter_Delete(t *testing.T) {
 	templates := []testTemplate{
-		{"v1/{var1}/{var2}/index.tmpl", "{{.path_variables.var1}},{{.result}}"},
+		{"v1/{var1}/{var2}/index.tmpl", "{{.path_variables.var1}},{{.data}}"},
 	}
 	router, cleanup := prepareTest(templates)
 	defer cleanup()
@@ -546,10 +549,11 @@ func TestRouter_Delete(t *testing.T) {
 	router.Use(
 		FormHandler(
 			"var1",
-			Delete(func(w http.ResponseWriter, r *http.Request) (any, error) {
+			Delete(func(w http.ResponseWriter, r *http.Request) (*Form, error) {
 				w.WriteHeader(202)
 				handlerCalled = true
-				return "resolvedValue", nil
+				SetValue(r, "data", "resolvedValue")
+				return nil, nil
 			}),
 		),
 	)
@@ -595,7 +599,7 @@ func TestRouter_UnknownHandler(t *testing.T) {
 
 func TestRouter_HandlerDoesNotSupportMethod(t *testing.T) {
 	templates := []testTemplate{
-		{"v1/{var1}/v2/{var2}/index.tmpl", "{{.result}},{{.path_variables.var2}}"},
+		{"v1/{var1}/v2/{var2}/index.tmpl", "{{.data}},{{.path_variables.var2}}"},
 	}
 	router, cleanup := prepareTest(templates)
 	defer cleanup()
@@ -609,9 +613,10 @@ func TestRouter_HandlerDoesNotSupportMethod(t *testing.T) {
 	resolverCalled := false
 
 	router.Use(
-		FormHandler("handler1", Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
+		FormHandler("handler1", Get(func(w http.ResponseWriter, r *http.Request) (*Form, error) {
 			resolverCalled = true
-			return "resolvedValue", nil
+			SetValue(r, "data", "resolvedValue")
+			return nil, nil
 		}),
 		),
 	)
@@ -661,7 +666,7 @@ func TestRouter_ResourceNotFoundError(t *testing.T) {
 	router.Use(
 		FormHandler(
 			"var1",
-			Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
+			Get(func(w http.ResponseWriter, r *http.Request) (*Form, error) {
 				value := PathVariable(r, "var1")
 				return nil, NotFound(fmt.Errorf("no entity found for %s", value))
 			}),
@@ -694,7 +699,7 @@ func TestRouter_UnexpectedError(t *testing.T) {
 	router.Use(
 		FormHandler(
 			"var1",
-			Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
+			Get(func(w http.ResponseWriter, r *http.Request) (*Form, error) {
 				value := PathVariable(r, "var1")
 				return nil, Unexpected(fmt.Errorf("some unexpected error resolving var1=%s", value))
 			}),
@@ -725,7 +730,7 @@ func TestRouter_UnexpectedErrorFallback(t *testing.T) {
 	router.Use(
 		FormHandler(
 			"var1",
-			Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
+			Get(func(w http.ResponseWriter, r *http.Request) (*Form, error) {
 				value := PathVariable(r, "var1")
 				return nil, Unexpected(fmt.Errorf("some unexpected error resolving var1=%s", value))
 			}),
@@ -755,7 +760,7 @@ func TestRouter_ResourceNotFoundErrorFallback(t *testing.T) {
 	router.Use(
 		FormHandler(
 			"var1",
-			Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
+			Get(func(w http.ResponseWriter, r *http.Request) (*Form, error) {
 				value := PathVariable(r, "var1")
 				return nil, NotFound(fmt.Errorf("no entity found for %s", value))
 			}),
@@ -920,9 +925,9 @@ func TestRouter_SetTemplate_RelativePath(t *testing.T) {
 
 	router.Use(
 		FormHandler("switchTemplate",
-			Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
+			Get(func(w http.ResponseWriter, r *http.Request) (*Form, error) {
 				SetTemplate(r, "edit")
-				return "handler-result", nil
+				return nil, nil
 			}),
 		),
 	)
@@ -949,9 +954,9 @@ func TestRouter_SetTemplate_AbsolutePath(t *testing.T) {
 
 	router.Use(
 		FormHandler("switchTemplate",
-			Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
+			Get(func(w http.ResponseWriter, r *http.Request) (*Form, error) {
 				SetTemplate(r, "other/location/index")
-				return "handler-result", nil
+				return nil, nil
 			}),
 		),
 	)
@@ -979,9 +984,9 @@ func TestRouter_SetTemplate_RelativeTakesPrecedence(t *testing.T) {
 
 	router.Use(
 		FormHandler("switchTemplate",
-			Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
+			Get(func(w http.ResponseWriter, r *http.Request) (*Form, error) {
 				SetTemplate(r, "edit")
-				return "handler-result", nil
+				return nil, nil
 			}),
 		),
 	)
@@ -1007,8 +1012,8 @@ func TestRouter_HandlerNoWriteRendersDefaultTemplate(t *testing.T) {
 
 	router.Use(
 		FormHandler("noWrite",
-			Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
-				return "handler-result", nil
+			Get(func(w http.ResponseWriter, r *http.Request) (*Form, error) {
+				return nil, nil
 			}),
 		),
 	)
@@ -1034,7 +1039,7 @@ func TestRouter_HandlerWriteDirectHTML_WhenNoTemplateMatches(t *testing.T) {
 
 	router.Use(
 		FormHandler("writeHTML",
-			Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
+			Get(func(w http.ResponseWriter, r *http.Request) (*Form, error) {
 				w.Write([]byte(`<span class="count">42</span>`))
 				return nil, nil
 			}),
@@ -1063,7 +1068,7 @@ func TestRouter_HandlerWriteEmptyString_RendersDefaultTemplate(t *testing.T) {
 
 	router.Use(
 		FormHandler("writeEmpty",
-			Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
+			Get(func(w http.ResponseWriter, r *http.Request) (*Form, error) {
 				w.Write([]byte(""))
 				return nil, nil
 			}),
@@ -1236,7 +1241,7 @@ func TestRouter_ScanTemplates_InvalidTemplate_ReturnsErrorInResponse(t *testing.
 
 func TestRouter_MultipartForm_ConfigurableMaxFormSize(t *testing.T) {
 	templates := []testTemplate{
-		{"path/to/index.tmpl", "result:{{.result}}"},
+		{"path/to/index.tmpl", "data:{{.data}}"},
 	}
 	router, cleanup := prepareTest(templates)
 	defer cleanup()
@@ -1246,8 +1251,9 @@ func TestRouter_MultipartForm_ConfigurableMaxFormSize(t *testing.T) {
 			MaxFormSize: 1 << 20, // 1MB
 		}),
 		FormHandler("myHandler",
-			Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
-				return r.FormValue("text_field"), nil
+			Post(func(w http.ResponseWriter, r *http.Request) (*Form, error) {
+				SetValue(r, "data", r.FormValue("text_field"))
+				return nil, nil
 			}),
 		),
 	)
@@ -1268,7 +1274,7 @@ func TestRouter_MultipartForm_ConfigurableMaxFormSize(t *testing.T) {
 	respBody, _ := io.ReadAll(resp.Body)
 
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
-	assert.Equal(t, "result:configured-size", string(respBody))
+	assert.Equal(t, "data:configured-size", string(respBody))
 }
 
 func TestRouter_Form_ExposedAsFormInTemplateContext(t *testing.T) {
@@ -1280,7 +1286,7 @@ func TestRouter_Form_ExposedAsFormInTemplateContext(t *testing.T) {
 
 	router.Use(
 		FormHandler("createUser",
-			Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
+			Post(func(w http.ResponseWriter, r *http.Request) (*Form, error) {
 				form := NewForm()
 				form.State = r.Form
 				if form.Value("name", "") == "Jane" {
@@ -1309,7 +1315,7 @@ func TestRouter_Form_ExposedAsFormInTemplateContext(t *testing.T) {
 
 func TestRouter_FormHandler_WithForm(t *testing.T) {
 	templates := []testTemplate{
-		{"path/to/index.tmpl", "result:{{.result.ID}},formResult:{{.form.Result.ID}}"},
+		{"path/to/index.tmpl", "data:{{.data.ID}},name:{{.form.Value \"name\" \"\"}}"},
 	}
 	router, cleanup := prepareTest(templates)
 	defer cleanup()
@@ -1321,10 +1327,10 @@ func TestRouter_FormHandler_WithForm(t *testing.T) {
 
 	router.Use(
 		FormHandler("createUser",
-			Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
+			Post(func(w http.ResponseWriter, r *http.Request) (*Form, error) {
 				form := NewForm()
 				form.State["name"] = []string{r.FormValue("name")}
-				form.Result = &User{ID: "123", Name: r.FormValue("name")}
+				SetValue(r, "data", &User{ID: "123", Name: r.FormValue("name")})
 				return form, nil
 			}),
 		),
@@ -1343,20 +1349,21 @@ func TestRouter_FormHandler_WithForm(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
-	assert.Equal(t, "result:123,formResult:123", string(body))
+	assert.Equal(t, "data:123,name:John", string(body))
 }
 
-func TestRouter_FormHandler_NonForm(t *testing.T) {
+func TestRouter_FormHandler_NoForm(t *testing.T) {
 	templates := []testTemplate{
-		{"path/to/index.tmpl", "result:{{.result}},formNil:{{if .form}}notnil{{else}}nil{{end}}"},
+		{"path/to/index.tmpl", "data:{{.data}},formNil:{{if .form}}notnil{{else}}nil{{end}}"},
 	}
 	router, cleanup := prepareTest(templates)
 	defer cleanup()
 
 	router.Use(
 		FormHandler("simpleHandler",
-			Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
-				return "simple-result", nil
+			Post(func(w http.ResponseWriter, r *http.Request) (*Form, error) {
+				SetValue(r, "data", "simple-result")
+				return nil, nil
 			}),
 		),
 	)
@@ -1373,7 +1380,7 @@ func TestRouter_FormHandler_NonForm(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
-	assert.Equal(t, "result:simple-result,formNil:nil", string(body))
+	assert.Equal(t, "data:simple-result,formNil:nil", string(body))
 }
 
 var ErrUnauthorized = errors.New("unauthorized")
@@ -1395,7 +1402,7 @@ func TestRouter_CustomErrorType(t *testing.T) {
 		ErrorType(ErrUnauthorized, http.StatusUnauthorized, "unauthorized"),
 		FormHandler(
 			"test",
-			Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
+			Get(func(w http.ResponseWriter, r *http.Request) (*Form, error) {
 				return nil, ErrUnauthorized
 			}),
 		),
@@ -1429,7 +1436,7 @@ func TestRouter_CustomErrorType_WrappedError(t *testing.T) {
 		ErrorType(ErrForbidden, http.StatusForbidden, "forbidden"),
 		FormHandler(
 			"test",
-			Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
+			Get(func(w http.ResponseWriter, r *http.Request) (*Form, error) {
 				return nil, fmt.Errorf("user lacks permission: %w", ErrForbidden)
 			}),
 		),
@@ -1462,7 +1469,7 @@ func TestRouter_CustomErrorType_NoFallbackTemplate(t *testing.T) {
 		ErrorType(ErrRateLimited, http.StatusTooManyRequests, "rate_limited"),
 		FormHandler(
 			"test",
-			Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
+			Get(func(w http.ResponseWriter, r *http.Request) (*Form, error) {
 				return nil, ErrRateLimited
 			}),
 		),
@@ -1496,7 +1503,7 @@ func TestRouter_CustomErrorType_FirstMatchWins(t *testing.T) {
 		ErrorType(ErrForbidden, http.StatusForbidden, "forbidden"),
 		FormHandler(
 			"test",
-			Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
+			Get(func(w http.ResponseWriter, r *http.Request) (*Form, error) {
 				return nil, fmt.Errorf("wrapped: %w", fmt.Errorf("double wrap: %w", ErrUnauthorized))
 			}),
 		),
@@ -1527,7 +1534,7 @@ func TestRouter_CustomErrorType_FallsBackToUnexpected(t *testing.T) {
 		ErrorType(ErrUnauthorized, http.StatusUnauthorized, "unauthorized"),
 		FormHandler(
 			"test",
-			Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
+			Get(func(w http.ResponseWriter, r *http.Request) (*Form, error) {
 				return nil, errors.New("some unknown error")
 			}),
 		),
@@ -1543,7 +1550,7 @@ func TestRouter_CustomErrorType_FallsBackToUnexpected(t *testing.T) {
 
 func TestRouter_CtxMethodReturnsError_MapsToErrorType(t *testing.T) {
 	templates := []testTemplate{
-		{"index.tmpl", "{{.ctx.auth.CurrentUser}}"},
+		{"index.tmpl", "{{.auth.CurrentUser}}"},
 		{"fallback/unauthorized.tmpl", "401: {{.error}}"},
 	}
 	router, cleanup := prepareTest(templates)
@@ -1597,7 +1604,7 @@ func TestRouter_BadRequestError(t *testing.T) {
 	router.Use(
 		FormHandler(
 			"var1",
-			Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
+			Get(func(w http.ResponseWriter, r *http.Request) (*Form, error) {
 				return nil, BadRequest(fmt.Errorf("invalid input: missing required field"))
 			}),
 		),
@@ -1627,7 +1634,7 @@ func TestRouter_BadRequestErrorFallback(t *testing.T) {
 	router.Use(
 		FormHandler(
 			"var1",
-			Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
+			Get(func(w http.ResponseWriter, r *http.Request) (*Form, error) {
 				return nil, BadRequest(fmt.Errorf("invalid input: missing required field"))
 			}),
 		),
@@ -1678,4 +1685,33 @@ func TestRouter_MalformedMultipartForm_ReturnsBadRequest(t *testing.T) {
 
 	resp := rec.Result()
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+}
+
+func TestRouter_SetValueInFormHandler(t *testing.T) {
+	templates := []testTemplate{
+		{"path/to/index.tmpl", "value:{{.handlerData}}"},
+	}
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
+	router.Use(
+		FormHandler("testHandler",
+			Get(func(w http.ResponseWriter, r *http.Request) (*Form, error) {
+				SetValue(r, "handlerData", "from-handler")
+				return nil, nil
+			}),
+		),
+	)
+
+	data := url.Values{}
+	data.Add("d_form_handler", "testHandler")
+	req := httptest.NewRequest("GET", "/path/to?"+data.Encode(), nil)
+	rec := httptest.NewRecorder()
+
+	router.ServeHTTP(rec, req)
+
+	resp := rec.Result()
+	body, _ := io.ReadAll(resp.Body)
+
+	assert.Equal(t, "value:from-handler", string(body))
 }

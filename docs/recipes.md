@@ -28,10 +28,10 @@ Set `HX-Location` headers to trigger client-side redirects after form submission
 
 ```go
 dave.FormHandler("createUser",
-    dave.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
+    dave.Post(func(w http.ResponseWriter, r *http.Request) (*dave.Form, error) {
         user := db.CreateUser(r.FormValue("name"))
         w.Header().Set("HX-Location", "/users/"+user.ID)
-        return user, nil
+        return nil, nil
     }),
 )
 ```
@@ -326,7 +326,7 @@ Use the `t` function in your templates:
 Access the current language directly via context:
 
 ```html
-<html lang="{{.ctx.lang}}">
+<html lang="{{.lang}}">
 ```
 
 ### Testing

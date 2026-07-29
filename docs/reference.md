@@ -135,7 +135,7 @@ Dave uses these internally:
 They can also be used in registered handlers:
 
 ```go
-dave.Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
+dave.Get(func(w http.ResponseWriter, r *http.Request) (*dave.Form, error) {
     id := dave.PathVariable(r, "id")
     if id == "" {
         return nil, dave.BadRequest(fmt.Errorf("id is required"))
@@ -147,7 +147,8 @@ dave.Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
     if user == nil {
         return nil, dave.NotFound(fmt.Errorf("user %s not found", id))
     }
-    return user, nil
+    dave.SetValue(r, "data", user)
+    return nil, nil
 })
 ```
 
@@ -199,7 +200,7 @@ Create corresponding fallback templates:
 **In form handlers:**
 
 ```go
-dave.Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
+dave.Get(func(w http.ResponseWriter, r *http.Request) (*dave.Form, error) {
     user := auth.GetUser(r)
     if user == nil {
         return nil, ErrUnauthorized
@@ -207,7 +208,8 @@ dave.Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
     if !user.HasPermission("admin") {
         return nil, fmt.Errorf("user %s lacks permission: %w", user.ID, ErrForbidden)
     }
-    return user, nil
+    dave.SetValue(r, "data", user)
+    return nil, nil
 })
 ```
 
@@ -236,7 +238,7 @@ In templates:
 
 ```html
 <!-- Triggers unauthorized fallback if no user is logged in -->
-{{.ctx.auth.CurrentUser.Name}}
+{{.auth.CurrentUser.Name}}
 ```
 
 When the template calls `.CurrentUser` and it returns `ErrUnauthorized`, Dave catches the error and renders `fallback/unauthorized.tmpl` with a 401 status code.
@@ -247,7 +249,7 @@ When the template calls `.CurrentUser` and it returns `ErrUnauthorized`, Dave ca
 
 ### Middleware
 
-Registers middleware that runs before template rendering. Middleware can set context values using `SetValue` which are available in templates via `{{.ctx.name}}`.
+Registers middleware that runs before template rendering. Middleware can set context values using `SetValue` which are available in templates via `{{.name}}`.
 
 ```go
 func Middleware(mw func(http.Handler) http.Handler) ConfFunc
@@ -272,13 +274,15 @@ router.Use(
 **Template access:**
 
 ```html
-<p>Welcome, {{.ctx.currentUser.Name}}</p>
-<p>Version: {{.ctx.config.Version}}</p>
+<p>Welcome, {{.currentUser.Name}}</p>
+<p>Version: {{.config.Version}}</p>
 ```
 
 ### SetValue
 
-Sets a context value that will be available in templates as `{{.ctx.name}}`.
+Sets a context value that will be available in templates as `{{.name}}`.
+
+**Reserved keys:** The following keys are reserved and will cause a panic if used: `path_variables`, `form`, `error`, `content`.
 
 ```go
 func SetValue(r *http.Request, key string, value any) *http.Request
@@ -302,9 +306,14 @@ func GetValue(r *http.Request, key string) any
 **Example:**
 
 ```go
-dave.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
+dave.Post(func(w http.ResponseWriter, r *http.Request) (*dave.Form, error) {
     userService := dave.GetValue(r, "userService").(*UserService)
-    return userService.Create(r.FormValue("name"))
+    user, err := userService.Create(r.FormValue("name"))
+    if err != nil {
+        return nil, err
+    }
+    dave.SetValue(r, "data", user)
+    return nil, nil
 })
 ```
 
@@ -373,7 +382,7 @@ func FormHandler(name string, handlerFunc ...FormHandlerConfFunc) ConfFunc
 **Handler signature:**
 
 ```go
-func(w http.ResponseWriter, r *http.Request) (any, error)
+func(w http.ResponseWriter, r *http.Request) (*Form, error)
 ```
 
 **Example:**
@@ -381,15 +390,21 @@ func(w http.ResponseWriter, r *http.Request) (any, error)
 ```go
 router.Use(
     dave.FormHandler("user",
-        dave.Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
+        dave.Get(func(w http.ResponseWriter, r *http.Request) (*dave.Form, error) {
             id := dave.PathVariable(r, "id")
-            return db.GetUser(id)
+            user, err := db.GetUser(id)
+            if err != nil {
+                return nil, err
+            }
+            dave.SetValue(r, "data", user)
+            return nil, nil
         }),
-        dave.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
+        dave.Post(func(w http.ResponseWriter, r *http.Request) (*dave.Form, error) {
             user := db.CreateUser(r.FormValue("name"))
-            return user, nil
+            dave.SetValue(r, "data", user)
+            return nil, nil
         }),
-        dave.Delete(func(w http.ResponseWriter, r *http.Request) (any, error) {
+        dave.Delete(func(w http.ResponseWriter, r *http.Request) (*dave.Form, error) {
             id := dave.PathVariable(r, "id")
             return nil, db.DeleteUser(id)
         }),
@@ -426,12 +441,11 @@ func NewForm() *Form
 
 - `State` — `map[string][]string` for preserving form values
 - `ValidationErrors` — Field validation errors
-- `Result` — Success result data
 
 **Example:**
 
 ```go
-dave.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
+dave.Post(func(w http.ResponseWriter, r *http.Request) (*dave.Form, error) {
     form := dave.NewForm()
 
     // Preserve submitted values
@@ -448,11 +462,11 @@ dave.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
         return form, nil  // Re-render with errors
     }
 
-    // Success
+    // Success - use SetValue for result data
     user := db.CreateUser(r.FormValue("email"))
-    form.Result = user
+    dave.SetValue(r, "data", user)
     w.Header().Set("HX-Location", "/users/"+user.ID) // HTMX way to redirect after creating an entity
-    return form, nil
+    return nil, nil
 })
 ```
 
@@ -465,7 +479,6 @@ dave.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
 | `{{.form.Errors "field"}}`          | `[]string` | Error messages for field  |
 | `{{.form.Value "field" "default"}}` | `string`   | Field value or default    |
 | `{{.form.Values "field"}}`          | `[]string` | All values (multi-select) |
-| `{{.form.Result}}`                  | `any`      | Same as `{{.result}}` if handler returns Form     |
 
 **Template example:**
 
@@ -486,9 +499,10 @@ Handlers can override which template is rendered using `SetTemplate`:
 
 ```go
 dave.FormHandler("editUser",
-    dave.Get(func(w http.ResponseWriter, r *http.Request) (any, error) {
+    dave.Get(func(w http.ResponseWriter, r *http.Request) (*dave.Form, error) {
         dave.SetTemplate(r, "edit")  // Render "edit" template instead of "index"
-        return user, nil
+        dave.SetValue(r, "data", user)
+        return nil, nil
     }),
 )
 ```
@@ -509,7 +523,7 @@ Handlers can write HTML directly to the response using `w.Write()`. This bypasse
 
 ```go
 dave.FormHandler("toggleLike",
-    dave.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
+    dave.Post(func(w http.ResponseWriter, r *http.Request) (*dave.Form, error) {
         count := db.ToggleLike(r.FormValue("id"))
         w.Write([]byte(fmt.Sprintf(`<span class="likes">%d</span>`, count)))
         return nil, nil
@@ -517,7 +531,7 @@ dave.FormHandler("toggleLike",
 )
 
 dave.FormHandler("deleteItem",
-    dave.Delete(func(w http.ResponseWriter, r *http.Request) (any, error) {
+    dave.Delete(func(w http.ResponseWriter, r *http.Request) (*dave.Form, error) {
         db.DeleteItem(r.FormValue("id"))
         w.Write([]byte(""))  // Empty response removes element with hx-swap="outerHTML"
         return nil, nil
@@ -540,7 +554,7 @@ Create layouts in `templates/layouts/`. The default layout is `layouts/default.t
 <!DOCTYPE html>
 <html>
   <head>
-    <title>{{.ctx.config.Title}}</title>
+    <title>{{.config.Title}}</title>
   </head>
   <body>
     <nav><!-- navigation --></nav>
@@ -697,12 +711,13 @@ func SetTemplate(r *http.Request, name string)
 **Example:**
 
 ```go
-dave.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
+dave.Post(func(w http.ResponseWriter, r *http.Request) (*dave.Form, error) {
     if hasErrors {
         dave.SetTemplate(r, "edit")  // Re-render edit form
         return form, nil
     }
-    return result, nil
+    dave.SetValue(r, "data", result)
+    return nil, nil
 })
 ```
 
@@ -733,12 +748,14 @@ dave.Func("formValue", func(r *http.Request) any {
 
 | Variable                     | Type            | Description                           |
 | ---------------------------- | --------------- | ------------------------------------- |
-| `{{.ctx.<name>}}`            | `any`           | Context values set via `SetValue`     |
+| `{{.<name>}}`                | `any`           | Context values set via `SetValue`     |
+| `{{.data}}`                  | `any`           | Convention: handler-provided data via `SetValue(r, "data", x)` |
 | `{{.path_variables.<name>}}` | `string`        | URL path variables                    |
-| `{{.result}}`                | `any`           | Handler return value                  |
-| `{{.form}}`                  | `*Form` | Form state (if Form returned) |
+| `{{.form}}`                  | `*Form`         | Form state (if `*Form` returned)      |
 | `{{.error}}`                 | `string`        | Error message (fallback templates)    |
 | `{{.content}}`               | `template.HTML` | Page content (layout templates)       |
+
+**Reserved keys:** The following keys cannot be used with `SetValue` and will panic: `path_variables`, `form`, `error`, `content`.
 
 ---
 

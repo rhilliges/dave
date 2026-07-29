@@ -9,7 +9,6 @@ type ValidationErrors map[string][]string
 type Form struct {
 	State            url.Values
 	ValidationErrors ValidationErrors
-	Result           any
 }
 
 // NewFormResponse creates FormResponse with fields initialized

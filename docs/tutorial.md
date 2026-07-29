@@ -189,7 +189,7 @@ Create `templates/users/index.tmpl`:
 <h1 class="text-2xl font-bold mb-6">Users</h1>
 
 <div class="grid gap-4">
-  {{range .ctx.users.All}}
+  {{range .users.All}}
   <div class="bg-white rounded-lg shadow p-6">
     <h2 class="text-xl font-semibold">{{.Name}}</h2>
     <p class="text-gray-600">{{.Email}}</p>
@@ -231,7 +231,7 @@ Update `templates/users/index.tmpl` to use the function:
 <h1 class="text-2xl font-bold mb-6">Users</h1>
 
 <div class="grid gap-4">
-  {{range .ctx.users.All}}
+  {{range .users.All}}
   <div class="bg-white rounded-lg shadow p-6">
     <h2 class="text-xl font-semibold">{{.Name}}</h2>
     <p class="text-gray-600">{{.Email}}</p>
@@ -267,13 +267,13 @@ r.Use(
         }
     }),
     dave.FormHandler("createUser",
-        dave.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
+        dave.Post(func(w http.ResponseWriter, r *http.Request) (*dave.Form, error) {
             name := r.FormValue("name")
             email := r.FormValue("email")
             birthday, _ := time.Parse("2006-01-02", r.FormValue("birthday"))
 
-            user := store.Create(name, email, birthday)
-            return user, nil
+            store.Create(name, email, birthday)
+            return nil, nil
         }),
     ),
 )
@@ -326,7 +326,7 @@ Update `templates/users/index.tmpl` to include the form. Note the hidden `d_form
   </div>
 
   <!-- User List -->
-  {{range .ctx.users.All}}
+  {{range .users.All}}
   <div class="bg-white rounded-lg shadow p-6">
     <h2 class="text-xl font-semibold">{{.Name}}</h2>
     <p class="text-gray-600">{{.Email}}</p>
@@ -403,7 +403,7 @@ Update `templates/users/index.tmpl`:
   </div>
 
   <!-- User List -->
-  {{range .ctx.users.All}} {{template "components/user-card" .}} {{else}}
+  {{range .users.All}} {{template "components/user-card" .}} {{else}}
   <p class="text-gray-500">No users yet.</p>
   {{end}}
 </div>
@@ -436,16 +436,16 @@ r.Use(
             return t.Format("Jan 2, 2006")
         }
     }),
-    dave.FormHandler("createUser",
-        dave.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
-            name := r.FormValue("name")
-            email := r.FormValue("email")
-            birthday, _ := time.Parse("2006-01-02", r.FormValue("birthday"))
+dave.FormHandler("createUser",
+    dave.Post(func(w http.ResponseWriter, r *http.Request) (*dave.Form, error) {
+        name := r.FormValue("name")
+        email := r.FormValue("email")
+        birthday, _ := time.Parse("2006-01-02", r.FormValue("birthday"))
 
-            user := store.Create(name, email, birthday)
-            return user, nil
-        }),
-    ),
+        store.Create(name, email, birthday)
+        return nil, nil
+    }),
+),
 )
 ```
 
@@ -480,7 +480,7 @@ Update the form handler in `main.go` to redirect after creation:
 
 ```go
 dave.FormHandler("createUser",
-    dave.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
+    dave.Post(func(w http.ResponseWriter, r *http.Request) (*dave.Form, error) {
         name := r.FormValue("name")
         email := r.FormValue("email")
         birthday, _ := time.Parse("2006-01-02", r.FormValue("birthday"))
@@ -489,7 +489,7 @@ dave.FormHandler("createUser",
 
         // Tell HTMX to redirect to the user's page
         w.Header().Set("HX-Location", "/users/"+user.ID)
-        return user, nil
+        return nil, nil
     }),
 ),
 ```
@@ -546,7 +546,7 @@ Create `templates/users/{id}/index.tmpl`:
   >← Back to Users</a
 >
 
-{{with .ctx.users.Get .path_variables.id}} {{template "components/user-card"
+{{with .users.Get .path_variables.id}} {{template "components/user-card"
 .}} {{else}}
 <p class="text-gray-500">User not found.</p>
 {{end}}
@@ -562,7 +562,7 @@ Update the form handler in `main.go`:
 
 ```go
 dave.FormHandler("createUser",
-    dave.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
+    dave.Post(func(w http.ResponseWriter, r *http.Request) (*dave.Form, error) {
         form := dave.NewForm()
 
         name := r.FormValue("name")
@@ -600,8 +600,7 @@ dave.FormHandler("createUser",
 
         user := store.Create(name, email, birthday)
         w.Header().Set("HX-Location", "/users/"+user.ID)
-        form.Result = user
-        return form, nil
+        return nil, nil
     }),
 ),
 ```
@@ -661,7 +660,7 @@ Update the form in `templates/users/index.tmpl` to show errors and preserve valu
     </div>
 
     <!-- User List -->
-    {{range .ctx.users.All}}
+    {{range .users.All}}
     {{template "components/user-card" .}}
     {{else}}
     <p class="text-gray-500">No users yet.</p>
@@ -719,7 +718,7 @@ Update `templates/users/{id}/index.tmpl` to use the new helper:
   >← Back to Users</a
 >
 
-{{with .ctx.getUser .path_variables.id}} {{template "components/user-card"
+{{with .getUser .path_variables.id}} {{template "components/user-card"
 .}} {{end}}
 ```
 
@@ -728,7 +727,7 @@ Now visiting `/users/999` displays the custom 404 page with the error message an
 Finally, let's make the user cards clickable. Update the user list in `templates/users/index.tmpl`:
 
 ```html
-{{range .ctx.users.All}}
+{{range .users.All}}
 <a href="/users/{{.ID}}" class="block">
   {{template "components/user-card" .}}
 </a>
@@ -867,7 +866,7 @@ func main() {
             }
         }),
         dave.FormHandler("createUser",
-            dave.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
+            dave.Post(func(w http.ResponseWriter, r *http.Request) (*dave.Form, error) {
                 form := dave.NewForm()
 
                 name := r.FormValue("name")
@@ -904,8 +903,7 @@ func main() {
 
                 user := store.Create(name, email, birthday)
                 w.Header().Set("HX-Location", "/users/"+user.ID)
-                form.Result = user
-                return form, nil
+                return nil, nil
             }),
         ),
     )

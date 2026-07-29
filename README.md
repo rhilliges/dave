@@ -93,7 +93,9 @@ router.Use(
 )
 ```
 
-Access in templates: `{{.ctx.currentUser.Name}}`
+Access in templates: `{{.currentUser.Name}}`
+
+**Note:** The keys `path_variables`, `form`, `error`, and `content` are reserved and will panic if used with `SetValue`.
 
 Register a service object with methods you can call from templates:
 
@@ -109,7 +111,7 @@ router.Use(
 ```
 
 ```html
-{{with .ctx.users.Get .path_variables.id}}
+{{with .users.Get .path_variables.id}}
 <h1>{{.Name}}</h1>
 <p>{{.Email}}</p>
 {{end}}
@@ -135,7 +137,7 @@ router.Use(
 Then in `templates/users/{id}/index.tmpl`:
 
 ```html
-{{with .ctx.user}}
+{{with .user}}
 <h1>{{.Name}}</h1>
 <p>{{.Email}}</p>
 {{else}}
@@ -145,15 +147,22 @@ Then in `templates/users/{id}/index.tmpl`:
 
 ### Form Handlers
 
-Process form submissions:
+Process form submissions with validation:
 
 ```go
 router.Use(
     dave.FormHandler("createPost",
-        dave.Post(func(w http.ResponseWriter, r *http.Request) (any, error) {
+        dave.Post(func(w http.ResponseWriter, r *http.Request) (*dave.Form, error) {
             title := r.FormValue("title")
+            if title == "" {
+                form := dave.NewForm()
+                form.State = r.Form
+                form.AddError("title", "Title is required")
+                return form, nil
+            }
             post := db.CreatePost(title)
-            return post, nil
+            dave.SetValue(r, "data", post)
+            return nil, nil
         }),
     ),
 )
@@ -169,7 +178,7 @@ Trigger with a hidden input:
 </form>
 ```
 
-Handler results are available as `{{.result}}` in templates. See [Form Handling](docs/reference.md#form-handling) for validation, `Form`, and more.
+Use `SetValue(r, "data", value)` to provide data to templates (accessible as `{{.data}}`). See [Form Handling](docs/reference.md#form-handling) for validation, `Form`, and more.
 
 ### Error Handling
 
@@ -270,7 +279,7 @@ Any template can reference any other template by its full path:
 
 ```html
 <!-- templates/users/profile/index.tmpl -->
-{{template "components/avatar" .ctx.user}}
+{{template "components/avatar" .user}}
 {{template "shared/sidebar" .}}
 ```
 
