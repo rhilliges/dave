@@ -640,6 +640,39 @@ router.Use(
 {{if isAdmin}}<a href="/admin">Admin Panel</a>{{end}}
 ```
 
+### Built-in Functions
+
+Dave provides three built-in template functions for component composition:
+
+| Function | Signature | Description |
+| -------- | --------- | ----------- |
+| `slots` | `slots` → `map[string]template.HTML` | Creates an empty slot map |
+| `slot` | `slot $s "name" "template" data` → `map[string]template.HTML` | Renders a template into a named slot |
+| `render` | `render $s "name"` → `template.HTML` | Outputs a slot's content |
+
+**Example:**
+
+```html
+<!-- Component definition -->
+{{define "card"}}
+<div class="card">
+  <header>{{render . "header"}}</header>
+  <main>{{render . "body"}}</main>
+</div>
+{{end}}
+
+<!-- Usage -->
+{{define "my-header"}}<h2>{{.Title}}</h2>{{end}}
+{{define "my-body"}}<p>{{.Text}}</p>{{end}}
+
+{{$s := slots}}
+{{$s = slot $s "header" "my-header" .}}
+{{$s = slot $s "body" "my-body" .}}
+{{template "card" $s}}
+```
+
+See [Component Slots](recipes.md#component-slots) for detailed usage patterns.
+
 ---
 
 ## Request Lifecycle

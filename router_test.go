@@ -1715,3 +1715,145 @@ func TestRouter_SetValueInFormHandler(t *testing.T) {
 
 	assert.Equal(t, "value:from-handler", string(body))
 }
+
+func TestRouter_Slots_BasicUsage(t *testing.T) {
+	templates := []testTemplate{
+		{"components/card.tmpl", `<div class="card"><header>{{render . "header"}}</header><main>{{render . "body"}}</main></div>`},
+		{"index.tmpl", `{{define "my-header"}}<h1>{{.Title}}</h1>{{end}}{{define "my-body"}}<p>{{.Description}}</p>{{end}}{{$s := slots}}{{$s = slot $s "header" "my-header" .}}{{$s = slot $s "body" "my-body" .}}{{template "components/card" $s}}`},
+	}
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
+	router.Use(
+		Middleware(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				r = SetValue(r, "Title", "Hello")
+				r = SetValue(r, "Description", "World")
+				next.ServeHTTP(w, r)
+			})
+		}),
+	)
+
+	req := httptest.NewRequest("GET", "/", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	resp := rec.Result()
+	body, _ := io.ReadAll(resp.Body)
+
+	assert.Equal(t, `<div class="card"><header><h1>Hello</h1></header><main><p>World</p></main></div>`, string(body))
+}
+
+func TestRouter_Slots_InRange(t *testing.T) {
+	templates := []testTemplate{
+		{"components/card.tmpl", `<div class="card">{{render . "header"}}|{{render . "body"}}</div>`},
+		{"index.tmpl", `{{define "item-header"}}H:{{.Title}}{{end}}{{define "item-body"}}B:{{.Desc}}{{end}}{{range .Items}}{{$s := slots}}{{$s = slot $s "header" "item-header" .}}{{$s = slot $s "body" "item-body" .}}{{template "components/card" $s}}{{end}}`},
+	}
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
+	type Item struct {
+		Title string
+		Desc  string
+	}
+
+	router.Use(
+		Middleware(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				r = SetValue(r, "Items", []Item{
+					{Title: "First", Desc: "One"},
+					{Title: "Second", Desc: "Two"},
+				})
+				next.ServeHTTP(w, r)
+			})
+		}),
+	)
+
+	req := httptest.NewRequest("GET", "/", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	resp := rec.Result()
+	body, _ := io.ReadAll(resp.Body)
+
+	assert.Equal(t, `<div class="card">H:First|B:One</div><div class="card">H:Second|B:Two</div>`, string(body))
+}
+
+func TestRouter_Slots_ConditionalRendering(t *testing.T) {
+	templates := []testTemplate{
+		{"components/card.tmpl", `<div>{{render . "content"}}</div>`},
+		{"index.tmpl", `{{define "typed-content"}}{{if eq .Type "featured"}}<strong>{{.Text}}</strong>{{else}}<span>{{.Text}}</span>{{end}}{{end}}{{$s := slots}}{{$s = slot $s "content" "typed-content" .}}{{template "components/card" $s}}`},
+	}
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
+	tests := []struct {
+		name     string
+		itemType string
+		expected string
+	}{
+		{"featured item", "featured", `<div><strong>Hello</strong></div>`},
+		{"normal item", "normal", `<div><span>Hello</span></div>`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			router.Use(
+				Middleware(func(next http.Handler) http.Handler {
+					return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						r = SetValue(r, "Type", tt.itemType)
+						r = SetValue(r, "Text", "Hello")
+						next.ServeHTTP(w, r)
+					})
+				}),
+			)
+
+			req := httptest.NewRequest("GET", "/", nil)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			resp := rec.Result()
+			body, _ := io.ReadAll(resp.Body)
+
+			assert.Equal(t, tt.expected, string(body))
+		})
+	}
+}
+
+func TestRouter_Slots_EmptySlotRendersEmpty(t *testing.T) {
+	templates := []testTemplate{
+		{"components/card.tmpl", `[{{render . "header"}}][{{render . "footer"}}]`},
+		{"index.tmpl", `{{define "my-header"}}HEADER{{end}}{{$s := slots}}{{$s = slot $s "header" "my-header" .}}{{template "components/card" $s}}`},
+	}
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
+	req := httptest.NewRequest("GET", "/", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	resp := rec.Result()
+	body, _ := io.ReadAll(resp.Body)
+
+	assert.Equal(t, `[HEADER][]`, string(body))
+}
+
+func TestRouter_Slots_WithExternalComponent(t *testing.T) {
+	templates := []testTemplate{
+		{"components/modal.tmpl", `<dialog><div class="title">{{render . "title"}}</div><div class="body">{{render . "body"}}</div></dialog>`},
+		{"components/modal-title.tmpl", `<h2>{{.}}</h2>`},
+		{"components/modal-body.tmpl", `<p>{{.}}</p>`},
+		{"index.tmpl", `{{$s := slots}}{{$s = slot $s "title" "components/modal-title" "My Title"}}{{$s = slot $s "body" "components/modal-body" "My Content"}}{{template "components/modal" $s}}`},
+	}
+	router, cleanup := prepareTest(templates)
+	defer cleanup()
+
+	req := httptest.NewRequest("GET", "/", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	resp := rec.Result()
+	body, _ := io.ReadAll(resp.Body)
+
+	assert.Equal(t, `<dialog><div class="title"><h2>My Title</h2></div><div class="body"><p>My Content</p></div></dialog>`, string(body))
+}

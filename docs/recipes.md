@@ -407,3 +407,128 @@ Then use in templates:
 {{form | error "email"}}
 ```
 
+## Component Slots
+
+Go templates support basic composition with `{{template "name" .}}`, but you can only pass a single data value. For more complex components with multiple content areas (like a card with header, body, and footer), Dave provides built-in slot functions.
+
+### Built-in Functions
+
+Dave registers three template functions automatically:
+
+- `slots` — Creates an empty slot map
+- `slot` — Renders a template into a named slot: `slot $s "name" "template-name" data`
+- `render` — Outputs a slot's content: `render . "name"`
+
+### Basic Usage
+
+Define a component with multiple slots:
+
+```html
+<!-- templates/components/card.tmpl -->
+<div class="card">
+  <div class="card-header">{{render . "header"}}</div>
+  <div class="card-body">{{render . "body"}}</div>
+</div>
+```
+
+Define the slot templates and use the component in the same file:
+
+```html
+<!-- templates/index.tmpl -->
+{{define "card-header"}}
+<h2>{{.Title}}</h2>
+{{end}}
+
+{{define "card-body"}}
+<p>{{.Description}}</p>
+{{end}}
+
+{{$s := slots}}
+{{$s = slot $s "header" "card-header" .}}
+{{$s = slot $s "body" "card-body" .}}
+{{template "components/card" $s}}
+```
+
+### Using in Loops
+
+The slots pattern works in `{{range}}` because each iteration passes fresh data to the slot templates:
+
+```html
+<!-- templates/posts/index.tmpl -->
+{{define "post-header"}}
+<h2>{{.Title}}</h2>
+{{end}}
+
+{{define "post-body"}}
+<p>{{.Description}}</p>
+{{end}}
+
+{{range .Posts}}
+  {{$s := slots}}
+  {{$s = slot $s "header" "post-header" .}}
+  {{$s = slot $s "body" "post-body" .}}
+  {{template "components/card" $s}}
+{{end}}
+```
+
+Each post renders with its own `.Title` and `.Description`.
+
+### Conditional Rendering
+
+Use type fields or conditionals in slot templates to render different HTML based on data:
+
+```html
+{{define "card-header"}}
+{{if eq .Type "featured"}}
+  <h1 class="featured">{{.Title}}</h1>
+  <span class="badge">Featured</span>
+{{else if eq .Type "compact"}}
+  <span class="title-sm">{{.Title}}</span>
+{{else}}
+  <h2>{{.Title}}</h2>
+{{end}}
+{{end}}
+```
+
+Or vary structure based on available fields:
+
+```html
+{{define "card-body"}}
+{{if .ImageURL}}
+  <img src="{{.ImageURL}}" alt="{{.Title}}">
+  <p>{{.Description}}</p>
+{{else if .Items}}
+  <ul>
+    {{range .Items}}<li>{{.}}</li>{{end}}
+  </ul>
+{{else}}
+  <p>{{.Description}}</p>
+{{end}}
+{{end}}
+```
+
+### Optional Slots
+
+Check if a slot exists before rendering:
+
+```html
+<!-- templates/components/card.tmpl -->
+<div class="card">
+  <div class="card-header">{{render . "header"}}</div>
+  <div class="card-body">{{render . "body"}}</div>
+  {{if index . "footer"}}
+    <div class="card-footer">{{render . "footer"}}</div>
+  {{end}}
+</div>
+```
+
+### When to Use
+
+The slots pattern is useful for:
+
+- **Layout regions** — Pages with header, sidebar, main, and footer areas
+- **Complex components** — Cards, modals, tabs with multiple content sections
+- **Wrapper patterns** — Consistent styling around varying content
+
+For simple cases where you just need to pass data to a component, standard `{{template "name" .}}` is simpler and sufficient.
+

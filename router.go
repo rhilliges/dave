@@ -1,6 +1,7 @@
 package dave
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -65,6 +66,8 @@ type templateOverride struct {
 }
 
 type templateOverrideKey struct{}
+
+type templateContextKey struct{}
 
 func SetTemplate(r *http.Request, name string) {
 	if o, ok := r.Context().Value(templateOverrideKey{}).(*templateOverride); ok {
@@ -218,12 +221,36 @@ func MethodHandler(m string, handler FormHandlerFunc) FormHandlerConfFunc {
 }
 
 func NewRouter(fs fs.FS) *Router {
-	return &Router{
+	router := &Router{
 		fs:            fs,
 		formHandlers:  make(map[string]map[string]FormHandlerFunc),
 		templateFuncs: make(map[string]func(*http.Request) any),
 		config:        &Conf{},
 	}
+	router.templateFuncs["slots"] = func(r *http.Request) any {
+		return func() map[string]template.HTML {
+			return make(map[string]template.HTML)
+		}
+	}
+	router.templateFuncs["slot"] = func(r *http.Request) any {
+		return func(slots map[string]template.HTML, name string, templateName string, data any) map[string]template.HTML {
+			tmpl, _ := r.Context().Value(templateContextKey{}).(*template.Template)
+			if tmpl == nil {
+				return slots
+			}
+			var buf bytes.Buffer
+			if err := tmpl.ExecuteTemplate(&buf, templateName, data); err == nil {
+				slots[name] = template.HTML(buf.String())
+			}
+			return slots
+		}
+	}
+	router.templateFuncs["render"] = func(r *http.Request) any {
+		return func(slots map[string]template.HTML, name string) template.HTML {
+			return slots[name]
+		}
+	}
+	return router
 }
 
 func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -295,6 +322,7 @@ func (router *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		r = r.WithContext(context.WithValue(r.Context(), templateContextKey{}, rootTemplate))
 		renderFuncs := make(template.FuncMap)
 		for name, factory := range router.templateFuncs {
 			renderFuncs[name] = factory(r)
@@ -449,6 +477,7 @@ func (router *Router) RenderTemplate(r *http.Request, templateName string) ([]by
 	rend, _ := r.Context().Value(renderContextKey{}).(*render)
 
 	rootTemplate, _ := router.templates.Clone()
+	r = r.WithContext(context.WithValue(r.Context(), templateContextKey{}, rootTemplate))
 	renderFuncs := make(template.FuncMap)
 	for name, factory := range router.templateFuncs {
 		renderFuncs[name] = factory(r)
